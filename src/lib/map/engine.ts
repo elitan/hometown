@@ -10,6 +10,7 @@ import { Railway, type RailWay, type Train } from './rail';
 import { Post, fitShadow, groundMaterial, installSky } from './look';
 import { Water } from './water';
 import { Forest, type TreeSpec } from './forest';
+import { Props } from './props';
 import { HouseDetails, roofTexture, roofUVs, wallTexture } from './houses';
 import { bridgeGeometry, isBridge, isTunnel, makeDeckAt, type Bridge } from './bridges';
 import {
@@ -126,6 +127,7 @@ export class MapEngine {
   private traffic: Traffic | null = null;
   private railway: Railway | null = null;
   private water: Water | null = null;
+  private props: Props | null = null;
   /** Follow cam: the vehicle being followed, and callbacks for the HUD. */
   private follow: { name: string; pose: () => { pos: THREE.Vector3; fwd: THREE.Vector3; kmh: number; back: number; up: number } | null; hudAt: number } | null = null;
   private followLook = new THREE.Vector3();
@@ -153,7 +155,7 @@ export class MapEngine {
     const c = this.controls = new MapControls(this.camera, r.domElement);
     c.enableDamping = true; c.dampingFactor = 0.08;
     c.maxPolarAngle = Math.PI * 0.46; c.minDistance = 25; c.maxDistance = 5000;
-    c.zoomToCursor = true;
+    c.zoomToCursor = false; // scroll zooms straight in/out at the screen centre (no sideways drift)
     c.addEventListener('start', () => { this.fly = null; this.stopFollow(); this.onUserInteract?.(); });
 
     this.scene.add(new THREE.HemisphereLight(0xdfeaf5, 0x6b7a52, 0.35)); // sky light mostly comes from the environment map
@@ -208,6 +210,7 @@ export class MapEngine {
     this.lastNow = now;
     if (this.trafficOn) { this.traffic?.update(dt); this.railway?.update(dt); }
     this.water?.update(dt);
+    this.props?.update(dt);
     this.forest?.update(this.camera.position, now);
     this.applyKeys(dt);
     if (this.follow) this.updateFollow(dt, now);
@@ -289,6 +292,8 @@ export class MapEngine {
     this.railway = null;
     this.water?.dispose();
     this.water = null;
+    this.props?.dispose();
+    this.props = null;
   }
 
   build({ P, data, elev, img, laser, surface, R, exag, style }: BuildInput, animate: boolean): BuildStats {
@@ -324,6 +329,7 @@ export class MapEngine {
     let buildingCount = 0, roofsMeasured = 0;
     const heightAt = surface ? (x: number, y: number) => surface.at(...P.unproj(x, y)) : null;
     const drivable: RoadWay[] = [], bridges: Bridge[] = [], railWays: RailWay[] = [], lakes: Poly[] = [];
+    const allRoads: { pts: XY[]; w: number; highway: string }[] = [];
 
     const inside = ([x, y]: XY) => Math.abs(x) < R && Math.abs(y) < R;
     for (const el of data.elements) {
@@ -390,6 +396,7 @@ export class MapEngine {
         });
       }
       if (t.natural === 'water' || t.waterway === 'riverbank' || t.landuse === 'reservoir' || t.landuse === 'basin') lakes.push(...polygons(P, el));
+      if (t.highway && el.type === 'way' && el.geometry && el.geometry.length > 1 && t.area !== 'yes' && !isBridge(t) && !isTunnel(t)) allRoads.push({ pts: toXY(P, el.geometry), w: ROAD[t.highway]?.[0] ?? 3, highway: t.highway });
       if (!t.name) continue;
       if (t.highway && el.geometry) named.roads.push({ pts: toXY(P, el.geometry), w: ROAD[t.highway]?.[0] ?? 3, name: t.name, kind: pretty(t.highway) + ' road' });
       else if (t.waterway && el.geometry && t.waterway !== 'riverbank') named.roads.push({ pts: toXY(P, el.geometry), w: 4, name: t.name, kind: pretty(t.waterway) });
@@ -417,6 +424,10 @@ export class MapEngine {
       m.castShadow = m.receiveShadow = true;
       world.add(m);
     }
+
+    // street furniture and small structures (lamps, bus stops, fences, power lines, parked cars, ...)
+    this.props = new Props({ P, data, H, R, buildings: named.buildings.map(b => b.p), roads: allRoads });
+    world.add(this.props.group);
 
     // lakes with real water surfaces
     if (lakes.length) { this.water = new Water(lakes, H); world.add(this.water.group); }
@@ -652,6 +663,24 @@ export class MapEngine {
       roads.filter(r => r.paved).forEach(r => stroke(r.pts, r.w + 1.4, '#4d4a45'));
       roads.forEach(r => stroke(r.pts, r.w, r.c));
       ctx.globalAlpha = 1;
+    }
+
+    // football pitch markings: touchlines and halfway line (goals are 3D, see props.ts)
+    for (const el of data.elements) {
+      const t = el.tags || {};
+      if (t.leisure !== 'pitch' || (t.sport && !/soccer|football/.test(t.sport))) continue;
+      const p = polygons(P, el)[0];
+      if (!p) continue;
+      const b = obb(p.outer);
+      if (b.long < 18) continue;
+      const c = Math.cos(b.angle), s2 = Math.sin(b.angle), hl = b.long / 2 - 1, hw = b.short / 2 - 1;
+      const pt = (u: number, v: number): XY => [b.cx + u * c - v * s2, b.cy + u * s2 + v * c];
+      ctx.save(); ctx.globalAlpha = 0.85;
+      stroke([pt(-hl, -hw), pt(hl, -hw), pt(hl, hw), pt(-hl, hw), pt(-hl, -hw)], 0.15, '#f4f6f2');
+      stroke([pt(0, -hw), pt(0, hw)], 0.15, '#f4f6f2');
+      ctx.beginPath(); const [mx, my] = px(pt(0, 0)); ctx.arc(mx, my, Math.min(9.15, hw * 0.4) * k, 0, Math.PI * 2);
+      ctx.lineWidth = Math.max(0.15 * k, 1); ctx.strokeStyle = '#f4f6f2'; ctx.stroke();
+      ctx.restore();
     }
 
     // contact shadow under every building so houses feel planted, not floating

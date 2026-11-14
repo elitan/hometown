@@ -75,8 +75,8 @@ export function pointAt(e: Edge, s: number): XY {
 
 // ---------- car models ----------
 
-type Variant = 'sedan' | 'estate' | 'van';
-const PAINT = ['#f2f2f0', '#f2f2f0', '#c7cacd', '#9aa0a6', '#2b2e33', '#1c1d20', '#23476e', '#7d1f1f', '#3d5a45', '#b8b2a4'];
+export type Variant = 'sedan' | 'estate' | 'van';
+export const PAINT = ['#f2f2f0', '#f2f2f0', '#c7cacd', '#9aa0a6', '#2b2e33', '#1c1d20', '#23476e', '#7d1f1f', '#3d5a45', '#b8b2a4'];
 
 /** Shape in the car's side view (x forward, y up), extruded across the width. */
 function slab(points: [number, number][], width: number, bevel = 0.06) {
@@ -99,7 +99,7 @@ const modelCache = new Map<string, THREE.BufferGeometry>();
 /** Material slots for car parts: glossy paint, glass, tyres, rims, lamps. */
 const SLOT = { paint: 0, glass: 1, tire: 2, rim: 3, lamp: 4 } as const;
 
-function carGeometry(v: Variant, paint: string) {
+export function carGeometry(v: Variant, paint: string) {
   const key = v + paint;
   if (modelCache.has(key)) return modelCache.get(key)!;
   const parts: [THREE.BufferGeometry, number][] = [];
@@ -137,7 +137,7 @@ function carGeometry(v: Variant, paint: string) {
 }
 
 /** Car paint with a clear coat, reflective glass, rubber, metal rims, slightly glowing lamps. */
-function carMaterials(): THREE.Material[] {
+export function carMaterials(): THREE.Material[] {
   return [
     new THREE.MeshPhysicalMaterial({ vertexColors: true, roughness: 0.38, metalness: 0.35, clearcoat: 0.9, clearcoatRoughness: 0.08 }),
     new THREE.MeshStandardMaterial({ color: '#1a232b', roughness: 0.05, metalness: 0.3, envMapIntensity: 3 }),

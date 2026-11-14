@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { LocalProjection, type OsmData } from '@/lib/map/geo';
 import { MapEngine, type BuildStats } from '@/lib/map/engine';
-import { fetchElevation, fetchImagery, fetchLaserTrees, fetchOSM, fetchSurface, geocode, type Elevation, type Imagery, type LaserTrees, type Surface } from '@/lib/map/sources';
+import { fetchElevation, fetchImagery, fetchLaserTrees, fetchOSM, fetchSurface, geocode, lantmaterietEnabled, setLantmaterietEnabled, type Elevation, type Imagery, type LaserTrees, type Surface } from '@/lib/map/sources';
 import type { MapStyle } from '@/lib/map/styles';
 import { Segmented } from './Segmented';
 import { Loader, type StepKey, type StepState } from './Loader';
@@ -14,6 +14,7 @@ type Loaded = { P: LocalProjection; data: OsmData; elev: Elevation | null; img: 
 
 const RADII = [{ v: 500, label: '1 km' }, { v: 1000, label: '2 km' }, { v: 1500, label: '3 km' }];
 const HILLS = [{ v: 1, label: '×1' }, { v: 2, label: '×2' }, { v: 4, label: '×4' }];
+const DATA = [{ v: 'hd', label: 'Lantmäteriet HD' }, { v: 'open', label: 'Open data only' }] as const;
 const STYLES: { v: MapStyle; label: string }[] = [{ v: 'illustrated', label: 'Illustrated' }, { v: 'hybrid', label: 'Hybrid' }, { v: 'satellite', label: 'Satellite' }];
 const NO_STEPS: Record<StepKey, StepState> = { geo: '', osm: '', dem: '', img: '', build: '' };
 const fmt = (n: number) => n.toLocaleString('en-US');
@@ -44,6 +45,7 @@ export default function Hometown() {
   const [hint, setHint] = useState(false);
   const [photoCredit, setPhotoCredit] = useState(false);
   const [traffic, setTraffic] = useState(true);
+  const [dataMode, setDataMode] = useState<'hd' | 'open'>('hd');
   const [follow, setFollow] = useState<{ name: string; kmh: number } | null>(null);
 
   const setStep = (k: StepKey, s: StepState) => setSteps(prev => ({ ...prev, [k]: s }));
@@ -76,7 +78,7 @@ export default function Hometown() {
     });
   }, []);
 
-  const load = useCallback(async (q: string, R: number, opts: { hills: number; style: MapStyle }) => {
+  const load = useCallback(async (q: string, R: number, opts: { hills: number; style: MapStyle }, keepView = false) => {
     q = q.trim();
     if (!q) return;
     const id = ++loadId.current;
@@ -111,7 +113,7 @@ export default function Hometown() {
       // if the trees were cached they're already here: build once with them
       const ready = laserDone ? await laserP : null;
       loadedRef.current = { P, data, elev, img, laser: ready?.trees ?? null, surface: ready?.surface ?? null, R, name };
-      rebuild(true, opts, !laserDone);
+      rebuild(!keepView, opts, !laserDone);
       console.info(`[load] map shown at ${Math.round(performance.now() - t0)} ms (elevation: ${elev?.source ?? 'none'})`);
       setStep('build', 'done');
       setTimeout(() => setLoaderOpen(false), 250);
@@ -156,6 +158,7 @@ export default function Hometown() {
     const q = fromHash || 'Mala, Hässleholm';
     // eslint-disable-next-line react-hooks/set-state-in-effect -- sync the input with the shared link once on mount
     if (fromHash) setPlace(fromHash);
+    if (!lantmaterietEnabled()) setDataMode('open');
     load(q, 1000, { hills: 2, style: 'hybrid' });
     return () => { eng.dispose(); engineRef.current = null; };
   }, [load, hideHint]);
@@ -190,6 +193,17 @@ export default function Hometown() {
           <div className="setting wide">
             <label>Map style</label>
             <Segmented options={STYLES} value={style} onChange={v => { setStyle(v); if (!busy) rebuild(false, { hills, style: v }); }} />
+          </div>
+          <div className="setting wide">
+            <label>Data</label>
+            <Segmented options={[...DATA]} value={dataMode} onChange={v => {
+              setDataMode(v);
+              setLantmaterietEnabled(v === 'hd');
+              const url = new URL(location.href);
+              if (v === 'hd') url.searchParams.delete('nolm'); else url.searchParams.set('nolm', '');
+              history.replaceState(null, '', url);
+              load(place, radius, { hills, style }, true); // same place, same camera: easy to compare
+            }} />
           </div>
           <div className="setting">
             <label>Area</label>

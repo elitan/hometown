@@ -6,6 +6,20 @@ export type BBox = { s: number; w: number; n: number; e: number };
 export type Elevation = { at: (lat: number, lon: number) => number; source: 'lantmateriet' | 'terrarium'; resolution: number };
 export type Imagery = { cv: HTMLCanvasElement; px: (lat: number, lon: number) => [number, number] };
 
+/**
+ * Whether the Lantmäteriet backend is available. Add `?nolm` to the URL to see the app exactly as it would run
+ * without a backend (e.g. on GitHub Pages): global 30 m terrain, estimated trees and roofs.
+ */
+let lmEnabled = typeof location === 'undefined' || !new URLSearchParams(location.search).has('nolm');
+/** Turn the Lantmäteriet data on/off (the UI's "Data" switch), to compare against what open data alone gives. */
+export function setLantmaterietEnabled(on: boolean) { lmEnabled = on; }
+export function lantmaterietEnabled() { return lmEnabled; }
+
+async function lmStatus(): Promise<{ lantmateriet: boolean } | null> {
+  if (!lmEnabled) return { lantmateriet: false };
+  return fetch('/api/lm/status').then(r => r.json()).catch(() => null);
+}
+
 export async function geocode(q: string): Promise<[number, number, string]> {
   const m = q.match(/^\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*$/);
   if (m) return [+m[1], +m[2], `${(+m[1]).toFixed(4)}, ${(+m[2]).toFixed(4)}`];
@@ -116,7 +130,7 @@ const SWEREF99TM = '+proj=utm +zone=33 +ellps=GRS80 +towgs84=0,0,0,0,0,0,0 +unit
 
 /** Lantmäteriet Markhöjdmodell (1 m DTM, Sweden only), read and cached server-side by /api/lm/dtm. */
 export async function fetchLantmaterietDTM(b: BBox, R: number): Promise<Elevation> {
-  const status = await fetch('/api/lm/status').then(r => r.json()).catch(() => null);
+  const status = await lmStatus();
   if (!status?.lantmateriet) throw new Error('Lantmäteriet login not configured');
   const res = R <= 1000 ? 1 : 1.5; // meters per sample
   const [{ default: proj4 }, r] = await Promise.all([
@@ -150,7 +164,7 @@ export type LaserTrees = { trees: LaserTree[]; year: string };
 
 /** Real trees detected server-side from Lantmäteriet forest laser data (Sweden + login only). */
 export async function fetchLaserTrees(b: BBox): Promise<LaserTrees> {
-  const status = await fetch('/api/lm/status').then(r => r.json()).catch(() => null);
+  const status = await lmStatus();
   if (!status?.lantmateriet) throw new Error('Lantmäteriet login not configured');
   const r = await fetch('/api/lm/trees', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -165,6 +179,7 @@ export async function fetchLaserTrees(b: BBox): Promise<LaserTrees> {
 export type Surface = { at: (lat: number, lon: number) => number };
 
 export async function fetchSurface(b: BBox): Promise<Surface> {
+  if (!(await lmStatus())?.lantmateriet) throw new Error('Lantmäteriet not available');
   const [{ default: proj4 }, r] = await Promise.all([
     import('proj4'),
     fetch('/api/lm/surface', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ bbox: [b.w, b.s, b.e, b.n] }) }),
