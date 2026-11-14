@@ -1,11 +1,36 @@
 // Server-side: read Lantmäteriet's 1 m terrain model (COG) for a bbox into one Float32 grid.
 // Only the needed window of each 10 km tile is downloaded (HTTP range requests).
-import { fromUrl } from 'geotiff';
+import { BaseClient, BaseResponse, fromCustomClient } from 'geotiff';
 import proj4 from 'proj4';
-import { LM_DOWNLOAD, LM_STAC, lmAuthHeader } from './lantmateriet';
+import { LM_DOWNLOAD, LM_STAC, fetchRetry, lmAuthHeader } from './lantmateriet';
 
 const SWEREF99TM = '+proj=utm +zone=33 +ellps=GRS80 +towgs84=0,0,0,0,0,0,0 +units=m +no_defs';
 const toTM = proj4('EPSG:4326', SWEREF99TM);
+
+/**
+ * geotiff HTTP client that retries each range request, including the body read: Lantmäteriet's download server
+ * resets connections under load, and without this a single reset fails a whole terrain tile.
+ */
+class RetryClient extends BaseClient {
+  constructor(url: string, private auth: string) { super(url); }
+  async request(options: RequestInit = {}): Promise<BaseResponse> {
+    let err: unknown;
+    for (let i = 0; i < 5; i++) {
+      try {
+        const headers = { ...(options.headers as Record<string, string>), Authorization: this.auth };
+        const r = await fetchRetry(this.url, { ...options, headers }, 2);
+        const data = await r.arrayBuffer();
+        return new (class extends BaseResponse {
+          get ok() { return r.ok; }
+          get status() { return r.status; }
+          getHeader(name: string) { return r.headers.get(name) ?? undefined; }
+          async getData() { return data; }
+        })();
+      } catch (e) { err = e; await new Promise(res => setTimeout(res, 300 * 2 ** i)); }
+    }
+    throw err;
+  }
+}
 
 /** Grid in SWEREF 99 TM: row 0 is the north edge (maxN), column 0 the west edge (minE). */
 export type DtmGrid = { minE: number; maxN: number; res: number; W: number; H: number; data: Float32Array };
@@ -38,7 +63,7 @@ export async function readDtm(bbox: [number, number, number, number], res: numbe
   const data = new Float32Array(W * H).fill(NaN);
 
   await Promise.all(hrefs.map(href => retry(async () => {
-    const tiff = await fromUrl(href, { headers: { Authorization: auth }, allowFullFile: false });
+    const tiff = await fromCustomClient(new RetryClient(href, auth), { allowFullFile: false });
     const img = await tiff.getImage();
     const [bx0, by0, bx1, by1] = img.getBoundingBox();
     const pr = (bx1 - bx0) / img.getWidth();
@@ -60,22 +85,34 @@ export async function readDtm(bbox: [number, number, number, number], res: numbe
 
   let valid = 0;
   for (let i = 0; i < data.length; i++) if (!Number.isNaN(data[i])) valid++;
-  if (valid < data.length * 0.5) throw new Error('Lantmäteriet elevation mostly missing here');
+  if (valid < data.length * 0.08) throw new Error('Lantmäteriet elevation missing here');
+  // small gaps (tile seams, odd nodata) are filled from neighbours; large ones are open sea (no data) -> 0 m
   fillGaps(data, W, H);
+  for (let i = 0; i < data.length; i++) if (Number.isNaN(data[i])) data[i] = 0;
   return { minE, maxN, res, W, H, data };
 }
 
-/** Fill nodata/tile seams with the nearest valid value along rows, then columns. */
+const MAX_GAP = 30;
+/** Fill short nodata runs (tile seams) along rows, then columns. Long runs are left for the caller (sea). */
 function fillGaps(d: Float32Array, W: number, H: number) {
   for (let pass = 0; pass < 2; pass++) {
     const [outer, inner, idx] = pass === 0
       ? [H, W, (o: number, i: number) => o * W + i]
       : [W, H, (o: number, i: number) => i * W + o];
     for (let o = 0; o < outer; o++) {
-      let last = NaN;
-      for (let i = 0; i < inner; i++) { const k = idx(o, i); if (Number.isNaN(d[k])) { if (!Number.isNaN(last)) d[k] = last; } else last = d[k]; }
-      last = NaN;
-      for (let i = inner - 1; i >= 0; i--) { const k = idx(o, i); if (Number.isNaN(d[k])) { if (!Number.isNaN(last)) d[k] = last; } else last = d[k]; }
+      // fill runs of nodata shorter than MAX_GAP cells with the value at their edge; leave long runs (sea)
+      let i = 0;
+      while (i < inner) {
+        if (!Number.isNaN(d[idx(o, i)])) { i++; continue; }
+        let j = i;
+        while (j < inner && Number.isNaN(d[idx(o, j)])) j++;
+        if (j - i <= MAX_GAP) {
+          const left = i > 0 ? d[idx(o, i - 1)] : NaN, right = j < inner ? d[idx(o, j)] : NaN;
+          const v = Number.isNaN(left) ? right : Number.isNaN(right) ? left : (left + right) / 2;
+          if (!Number.isNaN(v)) for (let k = i; k < j; k++) d[idx(o, k)] = v;
+        }
+        i = j;
+      }
     }
   }
 }

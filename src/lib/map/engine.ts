@@ -96,9 +96,11 @@ function roofColor(p: Poly, sample: Sample): THREE.Color | null {
 }
 
 /** Wall colour guess from the real roof colour: tile roofs sit on light render/brick, dark roofs often on falu-red wood. */
-function wallFor(roof: THREE.Color | null, kind: 'house' | 'barn' | 'church') {
+function wallFor(roof: THREE.Color | null, kind: 'house' | 'barn' | 'church', area = 100) {
   if (kind === 'church') return '#f6f3ec';
   if (kind === 'barn') return pick(['#9c3a26', '#a8452e', '#8f3524']);
+  // falu red is a small-house (and barn) thing; big city buildings get rendered/plastered tones
+  if (area > 260) return pick(['#e9dfcc', '#efe6d2', '#ddd2bd', '#e6d6b8', '#d9cfc2', '#f0ece4']);
   if (!roof) return pick(WALLS);
   const { h, s } = roof.getHSL({ h: 0, s: 0, l: 0 });
   const tile = s > 0.22 && (h < 0.09 || h > 0.94);
@@ -353,23 +355,44 @@ export class MapEngine {
             // real roof shape from the laser data when it's clean enough (OSM height/roof tags still win)
             const measured = heightAt && !t.height && !t['roof:shape'] ? measureRoof(p, box, heightAt) : null;
             if (measured) { box = measured.box; spec = measured.spec; roofsMeasured++; }
+            const church = t.building === 'church' || t.building === 'cathedral' || t.amenity === 'place_of_worship';
+            // churches: OSM 'height' is usually the tower's, so keep the nave at a normal height and add a tower + spire
+            const towerH = church ? THREE.MathUtils.clamp(parseFloat(t.height) || 32, 18, 110) : 0;
+            if (church) spec = { type: 'gabled', pitch: 45, eave: Math.min(11, Math.max(6, box.short * 0.5)) };
             const walls = spec.type === 'flat' ? (measured ? spec.eave : buildingHeight(t)) : spec.eave;
-            const geo = new THREE.ExtrudeGeometry(shape(p), { depth: walls + (hi - lo), bevelEnabled: false });
+            const geo = new THREE.ExtrudeGeometry(shape(p), { depth: walls + (hi - lo), bevelEnabled: false, steps: /turning torso/i.test(t.name ?? '') ? 24 : 1 });
             geo.rotateX(-Math.PI / 2).translate(0, lo, 0);
+            // Malmö's Turning Torso: its famous 90° twist (OSM can't describe it, so it's a named special case)
+            if (/turning torso/i.test(t.name ?? '')) {
+              const pa = geo.attributes.position, v = new THREE.Vector3();
+              for (let i = 0; i < pa.count; i++) {
+                v.fromBufferAttribute(pa, i);
+                const a2 = ((v.y - lo) / (walls + hi - lo)) * (Math.PI / 2), dx = v.x - cx, dz = v.z + cy;
+                pa.setXYZ(i, cx + dx * Math.cos(a2) - dz * Math.sin(a2), v.y, -cy + dx * Math.sin(a2) + dz * Math.cos(a2));
+              }
+              geo.computeVertexNormals();
+            }
             const barn = /barn|farm_auxiliary|shed/.test(t.building);
-            const church = t.building === 'church' || t.amenity === 'place_of_worship';
             const real = roofTints.get(p) ?? null;
             const roof: THREE.ColorRepresentation = real ? real.clone().multiplyScalar(1.1) : church ? '#55504b' : pick(ROOFS);
-            const wall = wallFor(real, church ? 'church' : barn ? 'barn' : 'house');
+            const wall = wallFor(real, church ? 'church' : barn ? 'barn' : 'house', polyArea(p));
             const parts = [paint(geo, wall, roof)];
             if (spec.type !== 'flat') parts.push(paint(roofUVs(roofGeometry(box, spec, hi + walls), box, spec), wall, roof));
+            if (church && box.long > 12) {
+              // west tower at one end of the nave: square shaft, then a four-sided spire
+              const side = Math.min(8, box.short * 0.6), shaft = towerH * 0.62, spire = towerH - shaft;
+              const end = box.long / 2 - side / 2, tx = box.cx - Math.cos(box.angle) * end, ty = box.cy - Math.sin(box.angle) * end;
+              const shaftGeo = new THREE.BoxGeometry(side, shaft + (hi - lo), side).rotateY(box.angle).translate(tx, lo + (shaft + hi - lo) / 2, -ty);
+              const spireGeo = new THREE.ConeGeometry(side * 0.72, spire, 4).rotateY(box.angle + Math.PI / 4).translate(tx, hi + shaft + spire / 2, -ty);
+              parts.push(paint(shaftGeo, wall, wall), paint(spireGeo, '#3f4a47', '#3f4a47'));
+            }
             for (const g of parts) { const sp = splitFacing(g); wallGeos.push(sp.walls); roofGeos.push(sp.roofs); g.dispose(); }
             // windows, a front door, and a chimney on most pitched house roofs
             const b = t.building, lv = parseFloat(t['building:levels']);
             const kind = church ? 'church' : /barn|farm_auxiliary|stable|cowshed/.test(b) ? 'barn'
               : /garage|garages|shed|carport|greenhouse|roof|hut/.test(b) ? 'shed'
               : /apartments|industrial|commercial|retail|office|school|warehouse|hospital|public/.test(b) || lv >= 3 ? 'big' : 'house';
-            details.addWalls(p, hi, hi + walls, kind, el.id);
+            if (!/turning torso/i.test(t.name ?? '')) details.addWalls(p, hi, hi + walls, kind, el.id); // straight windows don't fit a twisted tower
             if (kind === 'house' && spec.type !== 'flat' && el.id % 10 < 7) details.addChimney(box, hi + walls + (box.short / 2) * Math.tan(spec.pitch * Math.PI / 180), el.id);
             buildingCount++;
           } catch { /* degenerate footprint */ }
@@ -430,7 +453,9 @@ export class MapEngine {
     world.add(this.props.group);
 
     // lakes with real water surfaces
-    if (lakes.length) { this.water = new Water(lakes, H); world.add(this.water.group); }
+    // the sea: if the area reaches down to sea level, put a sea surface at 0 m (0.3 m up to hide shore noise)
+    const sea = elev && base < 1.5 ? { y: (0.3 - base) * exag, R } : null;
+    if (lakes.length || sea) { this.water = new Water(lakes, H, sea); world.add(this.water.group); }
 
     // railway track + trains
     if (railWays.length) {

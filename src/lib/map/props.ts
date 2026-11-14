@@ -317,10 +317,11 @@ export class Props {
       const m = new THREE.Mesh(g, new THREE.MeshStandardMaterial({ map: speckleTexture('#2f4a25', ['#3d5f2e', '#24391c', '#4f7339'], 500), roughness: 0.95 }));
       m.castShadow = m.receiveShadow = true; this.group.add(m); count('hedges');
     } else {
-      // Skåne-style stone wall: low, lumpy grey stones
-      const g = worldUV(sweep(pts, H, 0.35, -0.3, 0.85).geo, 1.2);
+      // Skåne-style stone wall: low, lumpy grey stones — or a town wall (Visby's ringmur) at full height
+      const city = t.barrier === 'city_wall', h = parseFloat(t.height) > 0 ? parseFloat(t.height) : city ? 8 : 0.85;
+      const g = worldUV(sweep(pts, H, city ? 1.2 : 0.35, -0.3, h).geo, city ? 2.5 : 1.2);
       const m = new THREE.Mesh(g, new THREE.MeshStandardMaterial({ map: speckleTexture('#7c7b76', ['#9a9893', '#5f5e5a', '#8a867c', '#6e6f6a'], 140, 9), roughness: 0.95 }));
-      m.castShadow = m.receiveShadow = true; this.group.add(m); count('stone walls');
+      m.castShadow = m.receiveShadow = true; this.group.add(m); count(city ? 'town walls' : 'stone walls');
     }
   }
 

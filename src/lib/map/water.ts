@@ -33,7 +33,8 @@ export class Water {
   private material: THREE.MeshStandardMaterial;
   private t = 0;
 
-  constructor(lakes: Poly[], H: Height) {
+  /** `sea`: also lay a sea surface at this scene height (coastal places), under everything else. */
+  constructor(lakes: Poly[], H: Height, sea: { y: number; R: number } | null = null) {
     this.normals.repeat.set(1 / 24, 1 / 24);
     this.material = new THREE.MeshStandardMaterial({
       color: '#1f3b4a', roughness: 0.06, metalness: 0, envMapIntensity: 4.5,
@@ -48,6 +49,16 @@ export class Water {
           'vec3 mapN = normalize( texture2D( normalMap, vNormalMapUv ).xyz * 2.0 - 1.0 + ( texture2D( normalMap, vNormalMapUv * 2.7 + offset2 ).xyz * 2.0 - 1.0 ) * vec3( 0.8, 0.8, 0.0 ) );');
     };
 
+    if (sea) {
+      const g = new THREE.PlaneGeometry(sea.R * 2, sea.R * 2).rotateX(-Math.PI / 2).translate(0, sea.y, 0);
+      // planar UVs in meters, like the lake shapes (ShapeGeometry uses world coordinates)
+      const p = g.attributes.position, uv = new Float32Array(p.count * 2);
+      for (let i = 0; i < p.count; i++) { uv[i * 2] = p.getX(i); uv[i * 2 + 1] = -p.getZ(i); }
+      g.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
+      const m = new THREE.Mesh(g, this.material);
+      m.receiveShadow = true;
+      this.group.add(m);
+    }
     for (const p of lakes) {
       if (p.outer.length < 4) continue;
       // water level: a low percentile of the shoreline height (the DTM is flat over water, shores rise)

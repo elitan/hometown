@@ -83,7 +83,7 @@ export class HouseDetails {
     const wallH = wallTop - ground;
     if (wallH < 2.4) return;
     const storey = kind === 'big' ? 3.6 : kind === 'church' ? wallH : 2.8;
-    const floors = Math.max(1, Math.min(8, Math.floor((wallH - 0.4) / storey)));
+    const floors = Math.max(1, Math.min(kind === 'big' ? 60 : 8, Math.floor((wallH - 0.4) / storey)));
     const spacing = kind === 'barn' ? 6 : kind === 'big' ? 3.2 : 2.6;
     let longest = -1, longestLen = 0;
     ring.forEach((a, i) => { const b = ring[(i + 1) % ring.length], l = Math.hypot(b[0] - a[0], b[1] - a[1]); if (l > longestLen) { longestLen = l; longest = i; } });
