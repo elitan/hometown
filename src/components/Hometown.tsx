@@ -3,14 +3,14 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { LocalProjection, type OsmData } from '@/lib/map/geo';
 import { MapEngine, type BuildStats } from '@/lib/map/engine';
-import { fetchElevation, fetchImagery, fetchLaserTrees, fetchOSM, geocode, type Elevation, type Imagery, type LaserTrees } from '@/lib/map/sources';
+import { fetchElevation, fetchImagery, fetchLaserTrees, fetchOSM, fetchSurface, geocode, type Elevation, type Imagery, type LaserTrees, type Surface } from '@/lib/map/sources';
 import type { MapStyle } from '@/lib/map/styles';
 import { Segmented } from './Segmented';
 import { Loader, type StepKey, type StepState } from './Loader';
 import { PlaceCard, type Chip } from './PlaceCard';
 import { NavControls } from './NavControls';
 
-type Loaded = { P: LocalProjection; data: OsmData; elev: Elevation | null; img: Imagery | null; laser: LaserTrees | null; R: number; name: string };
+type Loaded = { P: LocalProjection; data: OsmData; elev: Elevation | null; img: Imagery | null; laser: LaserTrees | null; surface: Surface | null; R: number; name: string };
 
 const RADII = [{ v: 500, label: '1 km' }, { v: 1000, label: '2 km' }, { v: 1500, label: '3 km' }];
 const HILLS = [{ v: 1, label: '×1' }, { v: 2, label: '×2' }, { v: 4, label: '×4' }];
@@ -28,6 +28,7 @@ export default function Hometown() {
   const engineRef = useRef<MapEngine | null>(null);
   const loadedRef = useRef<Loaded | null>(null);
   const loadId = useRef(0);
+  const optsRef = useRef<{ hills: number; style: MapStyle }>({ hills: 2, style: 'hybrid' });
   const hintTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
 
   const [place, setPlace] = useState('Mala, Hässleholm');
@@ -50,6 +51,7 @@ export default function Hometown() {
   const hideHint = useCallback(() => { setHint(false); clearTimeout(hintTimer.current); }, []);
 
   const rebuild = useCallback((animate: boolean, opts: { hills: number; style: MapStyle }, measuring = false) => {
+    optsRef.current = opts;
     const L = loadedRef.current, eng = engineRef.current;
     if (!L || !eng) return;
     const st: BuildStats = eng.build({ ...L, exag: opts.hills, style: opts.style }, animate);
@@ -60,7 +62,7 @@ export default function Hometown() {
     const parts = L.name.split(',').map(s => s.trim());
     const km = (L.R * 2 / 1000).toFixed(0);
     const chips: Chip[] = [
-      { color: '#a8452e', text: `${fmt(st.buildings)} buildings` },
+      { color: '#a8452e', text: st.roofsMeasured ? `${fmt(st.buildings)} buildings · ${fmt(st.roofsMeasured)} roofs measured` : `${fmt(st.buildings)} buildings` },
       { color: '#8a7a5c', text: `${km} × ${km} km` },
       st.elevMin != null
         ? { color: '#5a9ec9', text: `${st.elevMin}–${st.elevMax} m above sea` }
@@ -92,7 +94,10 @@ export default function Hometown() {
       const elevP = fetchElevation(b, R).then(f => { setStep('dem', 'done'); return f; }).catch(e => { console.warn(e); setStep('dem', 'fail'); return null; });
       // Real trees (Sweden + Lantmäteriet login) are slow the first time. Don't block the map on them, and start them
       // once elevation is in: both download from Lantmäteriet and would otherwise slow each other down.
-      const laserP = elevP.then(() => fetchLaserTrees(b)).catch(e => { console.info('Estimated trees:', (e as Error).message); return null; });
+      // laser products: real trees + the height-above-ground grid that real roof shapes are measured from
+      const laserP = elevP.then(() => Promise.all([fetchLaserTrees(b), fetchSurface(b).catch(() => null)]))
+        .then(([trees, surface]) => ({ trees, surface }))
+        .catch(e => { console.info('Estimated trees:', (e as Error).message); return null; });
       let laserDone = false;
       laserP.finally(() => { laserDone = true; console.info(`[load] laser trees at ${Math.round(performance.now() - t0)} ms`); });
       const [data, elev, img] = await Promise.all([
@@ -105,7 +110,7 @@ export default function Hometown() {
       if (id !== loadId.current) return;
       // if the trees were cached they're already here: build once with them
       const ready = laserDone ? await laserP : null;
-      loadedRef.current = { P, data, elev, img, laser: ready, R, name };
+      loadedRef.current = { P, data, elev, img, laser: ready?.trees ?? null, surface: ready?.surface ?? null, R, name };
       rebuild(true, opts, !laserDone);
       console.info(`[load] map shown at ${Math.round(performance.now() - t0)} ms (elevation: ${elev?.source ?? 'none'})`);
       setStep('build', 'done');
@@ -119,9 +124,9 @@ export default function Hometown() {
         const L = loadedRef.current;
         if (id !== loadId.current || !L) return;
         if (!laser) { setTrees(t => t && { ...t, state: 'estimated' }); return; }
-        L.laser = laser;
-        const n = engineRef.current?.setLaserTrees(laser) ?? 0;
-        setTrees({ state: 'laser', count: n, year: laser.year });
+        L.laser = laser.trees; L.surface = laser.surface;
+        // rebuild once with real trees and measured roofs (keeps the camera where it is)
+        rebuild(false, optsRef.current);
       }
     } catch (e) {
       console.error(e);

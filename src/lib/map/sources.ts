@@ -161,6 +161,27 @@ export async function fetchLaserTrees(b: BBox): Promise<LaserTrees> {
   return { trees: j.trees, year: j.year };
 }
 
+/** Height above ground (m) from the laser data, for measuring roofs. Nearest 1 m cell. */
+export type Surface = { at: (lat: number, lon: number) => number };
+
+export async function fetchSurface(b: BBox): Promise<Surface> {
+  const [{ default: proj4 }, r] = await Promise.all([
+    import('proj4'),
+    fetch('/api/lm/surface', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ bbox: [b.w, b.s, b.e, b.n] }) }),
+  ]);
+  if (!r.ok) throw new Error((await r.json().catch(() => null))?.error ?? 'Surface ' + r.status);
+  const g = JSON.parse(r.headers.get('X-Grid') ?? '{}') as { minE: number; maxN: number; res: number; W: number; H: number };
+  const data = new Uint16Array(await r.arrayBuffer());
+  const toTM = proj4('EPSG:4326', SWEREF99TM);
+  return {
+    at: (lat, lon) => {
+      const [E, N] = toTM.forward([lon, lat]);
+      const x = Math.floor((E - g.minE) / g.res), y = Math.floor((g.maxN - N) / g.res);
+      return x < 0 || y < 0 || x >= g.W || y >= g.H ? 0 : data[y * g.W + x] / 100;
+    },
+  };
+}
+
 // ---------- imagery ----------
 
 /** Esri World Imagery aerial photos. */

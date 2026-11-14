@@ -3,8 +3,8 @@ import * as THREE from 'three';
 import { MapControls } from 'three/examples/jsm/controls/MapControls.js';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { LocalProjection, inPoly, pick, polygons, rand, segDist, toXY, type OsmData, type Poly, type XY } from './geo';
-import type { Elevation, Imagery, LaserTrees } from './sources';
-import { obb, polyArea, roofGeometry, roofSpec } from './roofs';
+import type { Elevation, Imagery, LaserTrees, Surface } from './sources';
+import { measureRoof, obb, polyArea, roofGeometry, roofSpec } from './roofs';
 import { Traffic, type Car, type RoadWay } from './traffic';
 import { Railway, type RailWay, type Train } from './rail';
 import { Post, fitShadow, groundMaterial, installSky } from './look';
@@ -16,8 +16,8 @@ import {
   FIELDS, GROUND, LAND, LAND_ORDER, PLACE_KINDS, ROAD, ROOFS, UNPAVED, WALLS, WATER, buildingHeight, pretty, type MapStyle,
 } from './styles';
 
-export type BuildInput = { P: LocalProjection; data: OsmData; elev: Elevation | null; img: Imagery | null; laser: LaserTrees | null; R: number; exag: number; style: MapStyle };
-export type BuildStats = { buildings: number; trees: number; treeSource?: 'laser' | 'estimated'; elevMin: number | null; elevMax: number | null };
+export type BuildInput = { P: LocalProjection; data: OsmData; elev: Elevation | null; img: Imagery | null; laser: LaserTrees | null; surface?: Surface | null; R: number; exag: number; style: MapStyle };
+export type BuildStats = { buildings: number; roofsMeasured: number; trees: number; treeSource?: 'laser' | 'estimated'; elevMin: number | null; elevMax: number | null };
 type Named = { name: string; kind: string };
 type Sample = (x: number, y: number, r?: number) => THREE.Color | null;
 type Label = { name: string; x: number; y: number; h: number; kind: 'place' | 'water'; el: HTMLDivElement };
@@ -139,7 +139,7 @@ export class MapEngine {
     r.setPixelRatio(Math.min(devicePixelRatio, 2));
     r.setSize(dom.container.clientWidth, dom.container.clientHeight);
     r.shadowMap.enabled = true;
-    r.shadowMap.type = THREE.PCFSoftShadowMap;
+    r.shadowMap.type = THREE.PCFShadowMap; // PCFSoftShadowMap was removed in recent three.js
     r.shadowMap.autoUpdate = false; // refreshed every other frame in tick()
     r.toneMapping = THREE.ACESFilmicToneMapping;
     r.toneMappingExposure = 0.75;
@@ -274,8 +274,9 @@ export class MapEngine {
     this.world.traverse(o => {
       const m = o as THREE.Mesh;
       m.geometry?.dispose();
-      const mat = m.material as THREE.MeshStandardMaterial | undefined;
-      mat?.map?.dispose(); mat?.dispose?.();
+      // some meshes (cars) have one material per part
+      const mats = (Array.isArray(m.material) ? m.material : m.material ? [m.material] : []) as THREE.MeshStandardMaterial[];
+      for (const mat of mats) { mat.map?.dispose(); mat.dispose(); }
     });
     this.scene.remove(this.world);
     this.world = null;
@@ -290,8 +291,8 @@ export class MapEngine {
     this.water = null;
   }
 
-  build({ P, data, elev, img, laser, R, exag, style }: BuildInput, animate: boolean): BuildStats {
-    if (this.disposed) return { buildings: 0, trees: 0, elevMin: null, elevMax: null };
+  build({ P, data, elev, img, laser, surface, R, exag, style }: BuildInput, animate: boolean): BuildStats {
+    if (this.disposed) return { buildings: 0, roofsMeasured: 0, trees: 0, elevMin: null, elevMax: null };
     this.clearWorld();
     const world = this.world = new THREE.Group();
     this.scene.add(world);
@@ -320,7 +321,8 @@ export class MapEngine {
     // buildings (sunk below the lowest footprint point), named things, places
     const wallGeos: THREE.BufferGeometry[] = [], roofGeos: THREE.BufferGeometry[] = [], details = new HouseDetails(), treePts: XY[] = [], places: { name: string; xy: XY }[] = [];
     const named: typeof this.named = { buildings: [], roads: [], areas: [] };
-    let buildingCount = 0;
+    let buildingCount = 0, roofsMeasured = 0;
+    const heightAt = surface ? (x: number, y: number) => surface.at(...P.unproj(x, y)) : null;
     const drivable: RoadWay[] = [], bridges: Bridge[] = [], railWays: RailWay[] = [], lakes: Poly[] = [];
 
     const inside = ([x, y]: XY) => Math.abs(x) < R && Math.abs(y) < R;
@@ -340,9 +342,12 @@ export class MapEngine {
           const hs = [...p.outer, [cx, cy] as XY].map(([x, y]) => H(x, y));
           const lo = Math.min(...hs) - 1.5 * exag, hi = Math.max(...hs);
           try {
-            const box = obb(p.outer);
-            const spec = roofSpec(t, box, polyArea(p) / Math.max(1, box.long * box.short));
-            const walls = spec.type === 'flat' ? buildingHeight(t) : spec.eave;
+            let box = obb(p.outer);
+            let spec = roofSpec(t, box, polyArea(p) / Math.max(1, box.long * box.short));
+            // real roof shape from the laser data when it's clean enough (OSM height/roof tags still win)
+            const measured = heightAt && !t.height && !t['roof:shape'] ? measureRoof(p, box, heightAt) : null;
+            if (measured) { box = measured.box; spec = measured.spec; roofsMeasured++; }
+            const walls = spec.type === 'flat' ? (measured ? spec.eave : buildingHeight(t)) : spec.eave;
             const geo = new THREE.ExtrudeGeometry(shape(p), { depth: walls + (hi - lo), bevelEnabled: false });
             geo.rotateX(-Math.PI / 2).translate(0, lo, 0);
             const barn = /barn|farm_auxiliary|shed/.test(t.building);
@@ -431,7 +436,7 @@ export class MapEngine {
 
     // trees: real laser-measured trees when available, otherwise scatter in forest polygons + mapped trees
     this.treeCtx = { world, P, R, H, sample, buildings: named.buildings.map(b => b.p), bridges };
-    const stats = { buildings: buildingCount, elevMin: elev ? Math.round(base) : null, elevMax: elev ? Math.round(top) : null };
+    const stats = { buildings: buildingCount, roofsMeasured, elevMin: elev ? Math.round(base) : null, elevMax: elev ? Math.round(top) : null };
     if (laser?.trees.length) {
       const n = this.setLaserTrees(laser);
       this.finishBuild(R, H, places, named, inside, animate);

@@ -114,7 +114,7 @@ function broadleaf(seed: number, detailed: boolean) {
   for (let i = 0; i < clumps; i++) {
     const a = r() * Math.PI * 2, rr = (detailed ? 1.7 : 1.1) * Math.sqrt(r()), yy = (r() - 0.45) * 2.4;
     const s = (detailed ? 1.25 : 1.9) + r() * 0.7;
-    let b = new THREE.IcosahedronGeometry(detailed ? s : s * 1.25, detailed ? 1 : 0).scale(1, 0.85, 1).translate(Math.cos(a) * rr, center.y + yy, Math.sin(a) * rr).toNonIndexed();
+    let b: THREE.BufferGeometry = new THREE.IcosahedronGeometry(detailed ? s : s * 1.25, detailed ? 1 : 0).scale(1, 0.85, 1).translate(Math.cos(a) * rr, center.y + yy, Math.sin(a) * rr); // already non-indexed
     if (detailed) b = jitter(b, 0.35, r);
     parts.push(b);
   }

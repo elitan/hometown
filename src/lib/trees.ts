@@ -62,7 +62,10 @@ async function laserTiles(bbox: [number, number, number, number]) {
   return [...latest.values()];
 }
 
-export async function detectTrees(bbox: [number, number, number, number]): Promise<{ trees: Tree[]; points: number; year: string }> {
+/** Height above ground (nDSM) in centimetres on a 1 m SWEREF 99 TM grid, row 0 = north. 0 = ground / no hit. */
+export type Surface = { minE: number; maxN: number; res: number; W: number; H: number; data: Uint16Array };
+
+export async function detectTrees(bbox: [number, number, number, number]): Promise<{ trees: Tree[]; points: number; year: string; surface: Surface }> {
   const auth = lmAuthHeader();
   if (!auth) throw new Error('No Lantmäteriet login');
   const [w, s, e, n] = bbox;
@@ -129,7 +132,11 @@ export async function detectTrees(bbox: [number, number, number, number]): Promi
     trees.push([+lon.toFixed(6), +lat.toFixed(6), +height.toFixed(1), +crown.toFixed(1)]);
   }
   console.log(`[trees] ${points} points -> ${trees.length} trees in ${Math.round(performance.now() - T0)} ms`);
-  return { trees, points, year: tiles.map(t => t.date.slice(0, 4)).sort().pop() ?? '' };
+  // keep the raw (unsmoothed) height-above-ground grid too: roofs are measured from it
+  const cm = new Uint16Array(W * H);
+  for (let k = 0; k < cm.length; k++) cm[k] = Math.min(65535, Math.round(chm[k] * 100));
+  const surface: Surface = { minE: area.x0, maxN: area.y1, res: RES, W, H, data: cm };
+  return { trees, points, year: tiles.map(t => t.date.slice(0, 4)).sort().pop() ?? '', surface };
 }
 
 function blur3(a: Float32Array, W: number, H: number) {
