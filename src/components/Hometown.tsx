@@ -43,6 +43,7 @@ export default function Hometown() {
   const [hint, setHint] = useState(false);
   const [photoCredit, setPhotoCredit] = useState(false);
   const [traffic, setTraffic] = useState(true);
+  const [follow, setFollow] = useState<{ name: string; kmh: number } | null>(null);
 
   const setStep = (k: StepKey, s: StepState) => setSteps(prev => ({ ...prev, [k]: s }));
 
@@ -142,6 +143,8 @@ export default function Hometown() {
   useEffect(() => {
     const eng = new MapEngine({ container: containerRef.current!, labels: labelsRef.current!, tip: tipRef.current!, compass: compassRef.current as unknown as HTMLElement });
     eng.onUserInteract = hideHint;
+    eng.onFollow = (name, kmh) => { setFollow({ name, kmh }); setHint(false); };
+    eng.onFollowEnd = () => setFollow(null);
     engineRef.current = eng;
     if (process.env.NODE_ENV === 'development') (window as unknown as { hometown: MapEngine }).hometown = eng; // debug handle
     const fromHash = decodeURIComponent(location.hash.slice(1));
@@ -195,6 +198,14 @@ export default function Hometown() {
       </section>
 
       <PlaceCard card={cardWithTrees} />
+      {follow && (
+        <div id="follow" className="glass" role="status">
+          <span className="live" />
+          <span>Following <b>{follow.name}</b></span>
+          <span className="kmh">{Math.round(follow.kmh)} km/h</span>
+          <button className="btn ghost" onClick={() => engineRef.current?.stopFollow()}>Stop <kbd>Esc</kbd></button>
+        </div>
+      )}
 
       <NavControls
         compassRef={compassRef}
@@ -214,7 +225,7 @@ export default function Hometown() {
       </div>
 
       <div id="hint" className={'glass' + (hint ? '' : ' gone')}>
-        <span><b>Drag</b> to pan</span><span><b>Right-drag</b> to rotate</span><span><b>Scroll</b> to zoom</span><span><b>Hover</b> to see names</span>
+        <span><b>Drag</b> to pan</span><span><b>Right-drag</b> to rotate</span><span><b>Scroll</b> to zoom</span><span><b>Click</b> a car or train to follow it</span>
       </div>
 
       <Loader open={loaderOpen} steps={steps} error={error} />

@@ -129,7 +129,7 @@ function carGeometry(v: Variant, paint: string) {
 
 // ---------- cars ----------
 
-type Car = { mesh: THREE.Mesh; edge: Edge; next: Edge; prev: Edge | null; s: number; v: number; vmax: number; heading: number };
+export type Car = { mesh: THREE.Mesh; edge: Edge; next: Edge; prev: Edge | null; s: number; v: number; vmax: number; heading: number };
 
 export class Traffic {
   readonly group = new THREE.Group();
@@ -157,6 +157,7 @@ export class Traffic {
     const mesh = car?.mesh ?? new THREE.Mesh(carGeometry(v, pick(PAINT)), this.material);
     mesh.castShadow = true;
     const c: Car = car ?? { mesh, edge: e, next: e, prev: null, s: 0, v: 0, vmax: 1, heading: 0 };
+    if (!car) mesh.userData.vehicle = { kind: 'car', car: c, name: v === 'van' ? 'Van' : v === 'estate' ? 'Estate car' : 'Saloon car' };
     c.edge = e; c.prev = null; c.s = rand(0, e.len); c.next = this.chooseNext(e);
     c.vmax = rand(0.85, 1.05); c.v = Math.min(e.speed * c.vmax, 8);
     if (!car) { this.cars.push(c); this.group.add(mesh); }

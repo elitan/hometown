@@ -5,8 +5,8 @@ import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js
 import { LocalProjection, inPoly, pick, polygons, rand, segDist, toXY, type OsmData, type Poly, type XY } from './geo';
 import type { Elevation, Imagery, LaserTrees } from './sources';
 import { obb, polyArea, roofGeometry, roofSpec } from './roofs';
-import { Traffic, type RoadWay } from './traffic';
-import { Railway, type RailWay } from './rail';
+import { Traffic, type Car, type RoadWay } from './traffic';
+import { Railway, type RailWay, type Train } from './rail';
 import { bridgeGeometry, isBridge, isTunnel, makeDeckAt, type Bridge } from './bridges';
 import {
   FIELDS, GROUND, LAND, LAND_ORDER, PLACE_KINDS, ROAD, ROOFS, UNPAVED, WALLS, WATER, buildingHeight, pretty, type MapStyle,
@@ -96,6 +96,12 @@ export class MapEngine {
   private lastNow = 0;
   private traffic: Traffic | null = null;
   private railway: Railway | null = null;
+  /** Follow cam: the vehicle being followed, and callbacks for the HUD. */
+  private follow: { name: string; pose: () => { pos: THREE.Vector3; fwd: THREE.Vector3; kmh: number; back: number; up: number } | null; hudAt: number } | null = null;
+  private followLook = new THREE.Vector3();
+  onFollow?: (name: string, kmh: number) => void;
+  onFollowEnd?: () => void;
+  private downAt: [number, number] | null = null;
   private trafficOn = true;
 
   constructor(private dom: EngineDom) {
@@ -113,7 +119,7 @@ export class MapEngine {
     c.enableDamping = true; c.dampingFactor = 0.08;
     c.maxPolarAngle = Math.PI * 0.46; c.minDistance = 25; c.maxDistance = 5000;
     c.zoomToCursor = true;
-    c.addEventListener('start', () => { this.fly = null; this.onUserInteract?.(); });
+    c.addEventListener('start', () => { this.fly = null; this.stopFollow(); this.onUserInteract?.(); });
 
     this.scene.add(new THREE.HemisphereLight(0xeaf4ff, 0x5d7a4c, 1.35));
     this.sun.castShadow = true;
@@ -124,6 +130,9 @@ export class MapEngine {
 
     addEventListener('resize', this.onResize);
     r.domElement.addEventListener('pointermove', this.onPointerMove);
+    r.domElement.addEventListener('pointerdown', e => { this.downAt = [e.clientX, e.clientY]; });
+    r.domElement.addEventListener('pointerup', this.onClick);
+    addEventListener('keydown', this.onKey);
     r.domElement.addEventListener('pointerleave', this.hideTip);
     r.setAnimationLoop(this.tick);
   }
@@ -132,6 +141,7 @@ export class MapEngine {
     this.disposed = true;
     this.renderer.setAnimationLoop(null);
     removeEventListener('resize', this.onResize);
+    removeEventListener('keydown', this.onKey);
     this.clearWorld();
     this.controls.dispose();
     this.renderer.dispose();
@@ -152,13 +162,14 @@ export class MapEngine {
     const dt = this.lastNow ? (now - this.lastNow) / 1000 : 0;
     this.lastNow = now;
     if (this.trafficOn) { this.traffic?.update(dt); this.railway?.update(dt); }
-    if (this.fly) {
+    if (this.follow) this.updateFollow(dt, now);
+    else if (this.fly) {
       const f = this.fly, k = Math.min(1, (now - f.t0) / f.ms), e = 1 - Math.pow(1 - k, 3);
       this.camera.position.lerpVectors(f.from, f.pos, e);
       this.controls.target.lerpVectors(f.fromT, f.target, e);
       if (k >= 1) this.fly = null;
     }
-    this.controls.update();
+    if (!this.follow) this.controls.update();
     this.renderer.render(this.scene, this.camera);
     this.updateLabels();
     this.dom.compass.style.transform = `rotate(${THREE.MathUtils.radToDeg(this.controls.getAzimuthalAngle())}deg)`;
@@ -195,6 +206,7 @@ export class MapEngine {
   // ---------- build ----------
 
   private clearWorld() {
+    this.stopFollow();
     if (!this.world) return;
     this.world.traverse(o => {
       const m = o as THREE.Mesh;
@@ -365,6 +377,7 @@ export class MapEngine {
 
   setTraffic(on: boolean) {
     this.trafficOn = on;
+    if (!on) this.stopFollow();
     if (this.traffic) this.traffic.group.visible = on;
   }
 
@@ -691,12 +704,95 @@ export class MapEngine {
     for (const a of this.named.areas) if (a.polys.some(p => inPoly(x, y, p))) return a;
     return null;
   }
+  // ---------- follow cam ----------
+
+  private vehicleAt(e: PointerEvent | MouseEvent) {
+    const meshes: THREE.Object3D[] = [];
+    if (this.trafficOn) {
+      this.traffic?.group.children.forEach(m => m.visible && meshes.push(m));
+      this.railway?.group.children.forEach(m => m.userData.vehicle && m.visible && meshes.push(m));
+    }
+    if (!meshes.length) return null;
+    const rect = this.renderer.domElement.getBoundingClientRect();
+    this.ndc.set((e.clientX - rect.left) / rect.width * 2 - 1, -((e.clientY - rect.top) / rect.height) * 2 + 1);
+    this.ray.setFromCamera(this.ndc, this.camera);
+    // a little forgiving: cars are small from far away
+    const hit = this.ray.intersectObjects(meshes, false)[0];
+    if (hit) return hit.object.userData.vehicle as { kind: 'car'; car: Car; name: string } | { kind: 'train'; train: Train };
+    let best: THREE.Object3D | null = null, bestD = Infinity;
+    for (const m of meshes) {
+      const d = this.ray.ray.distanceToPoint(m.position), dist = m.position.distanceTo(this.camera.position);
+      if (d < Math.max(3, dist * 0.012) && d < bestD) { bestD = d; best = m; }
+    }
+    return best?.userData.vehicle ?? null;
+  }
+
+  private onClick = (e: PointerEvent) => {
+    const d = this.downAt; this.downAt = null;
+    if (!d || e.button !== 0 || Math.hypot(e.clientX - d[0], e.clientY - d[1]) > 6) return;
+    const v = this.vehicleAt(e);
+    if (v) this.startFollow(v);
+    else this.stopFollow();
+  };
+
+  private onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') this.stopFollow(); };
+
+  get following() { return !!this.follow; }
+
+  private startFollow(v: { kind: 'car'; car: Car; name: string } | { kind: 'train'; train: Train }) {
+    const up = new THREE.Vector3(0, 1, 0);
+    const dirOf = (o: THREE.Object3D) => new THREE.Vector3(1, 0, 0).applyAxisAngle(up, o.rotation.y);
+    const size = (m: THREE.Mesh) => { m.geometry.computeBoundingBox(); return m.geometry.boundingBox!; };
+    if (v.kind === 'car') {
+      const c = v.car, bb = size(c.mesh);
+      // ~2.5 m behind the rear bumper and ~1.6 m above the roof
+      const back = bb.max.x + 2.5, upBy = bb.max.y + 1.6;
+      this.follow = { name: v.name, hudAt: 0, pose: () => ({ pos: c.mesh.position, fwd: dirOf(c.mesh), kmh: c.v * 3.6, back, up: upBy }) };
+    } else {
+      const t = v.train, rail = this.railway;
+      this.follow = {
+        name: t.name, hudAt: 0,
+        // just behind and above the leading car, looking down the line
+        pose: () => rail?.trains.includes(t) && t.meshes[0].visible
+          ? { pos: t.meshes[0].position, fwd: dirOf(t.meshes[0]), kmh: t.v * 3.6, back: t.cars[0].len / 2 + 3, up: size(t.meshes[0]).max.y + 2.6 }
+          : null,
+      };
+    }
+    this.fly = null;
+    this.hideTip();
+    this.followLook.copy(this.controls.target);
+    this.onFollow?.(this.follow.name, 0);
+  }
+
+  stopFollow() {
+    if (!this.follow) return;
+    this.follow = null;
+    this.controls.target.copy(this.followLook);
+    this.onFollowEnd?.();
+  }
+
+  private updateFollow(dt: number, now: number) {
+    const f = this.follow!, p = f.pose();
+    if (!p) return this.stopFollow();
+    const want = p.pos.clone().addScaledVector(p.fwd, -p.back).add(new THREE.Vector3(0, p.up, 0));
+    const look = p.pos.clone().addScaledVector(p.fwd, 14).add(new THREE.Vector3(0, 1.2, 0));
+    const k = 1 - Math.exp(-dt * 6);
+    this.camera.position.lerp(want, k);
+    this.followLook.lerp(look, k);
+    this.camera.lookAt(this.followLook);
+    this.controls.target.copy(this.followLook);
+    if (now - f.hudAt > 120) { f.hudAt = now; this.onFollow?.(f.name, p.kmh); }
+  }
+
   private hideTip = () => this.dom.tip.classList.remove('on');
   private onPointerMove = (e: PointerEvent) => {
     if (e.buttons) return this.hideTip();
     cancelAnimationFrame(this.tipRaf);
     this.tipRaf = requestAnimationFrame(() => {
-      const p = this.groundAt(e), f = p && this.lookup(p), tip = this.dom.tip;
+      const v = this.follow ? null : this.vehicleAt(e);
+      this.renderer.domElement.style.cursor = v ? 'pointer' : '';
+      const veh = v && { name: v.kind === 'car' ? v.name : v.train.name, kind: 'Click to follow' };
+      const p = veh ? null : this.groundAt(e), f = veh || (p && this.lookup(p)), tip = this.dom.tip;
       if (!f) return this.hideTip();
       tip.replaceChildren();
       const b = document.createElement('b'); b.textContent = f.name; tip.append(b);

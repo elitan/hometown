@@ -160,24 +160,24 @@ function wagon(kind: 'box' | 'tank' | 'flat', color: string) {
   return g;
 }
 
-function makeConsist(): { cars: CarSpec[]; speed: number } {
+function makeConsist(): { cars: CarSpec[]; speed: number; name: string } {
   if (Math.random() < 0.65) {
     const n = pick([2, 3, 3, 4]);
-    return { speed: rand(110, 140) / 3.6, cars: Array.from({ length: n }, (_, i) => ({ len: 26, geo: emuCar(i === 0 ? 1 : i === n - 1 ? -1 : 0) })) };
+    return { name: 'Passenger train', speed: rand(110, 140) / 3.6, cars: Array.from({ length: n }, (_, i) => ({ len: 26, geo: emuCar(i === 0 ? 1 : i === n - 1 ? -1 : 0) })) };
   }
   const n = Math.round(rand(8, 18));
   const loads = [['box', '#7b3b2a'], ['box', '#4b5a63'], ['tank', '#2f3438'], ['flat', '#9b7a4c'], ['box', '#8a2f2a']] as const;
-  return { speed: rand(70, 90) / 3.6, cars: [{ len: 19, geo: locomotive() }, ...Array.from({ length: n }, () => { const [k, c] = pick([...loads]); return { len: 15, geo: wagon(k, c) }; })] };
+  return { name: 'Freight train', speed: rand(70, 90) / 3.6, cars: [{ len: 19, geo: locomotive() }, ...Array.from({ length: n }, () => { const [k, c] = pick([...loads]); return { len: 15, geo: wagon(k, c) }; })] };
 }
 
-type Train = { meshes: THREE.Mesh[]; cars: CarSpec[]; path: Edge[]; head: number; v: number; vmax: number; length: number };
+export type Train = { meshes: THREE.Mesh[]; cars: CarSpec[]; path: Edge[]; head: number; v: number; vmax: number; length: number; name: string };
 type Entry = { edge: Edge; s: number };
 
 export class Railway {
   readonly group = new THREE.Group();
   private edges: Edge[] = []; private out = new Map<string, number[]>();
   private surface = new Map<number, Height>(); // edge id -> rail-bed height
-  private trains: Train[] = [];
+  readonly trains: Train[] = [];
   private material = new THREE.MeshLambertMaterial({ vertexColors: true, flatShading: true });
   private nextSpawn = rand(1, 4);
   private entries: Entry[] = [];
@@ -230,6 +230,7 @@ export class Railway {
       if (inside(e.pts[0])) continue;
       for (let s = 0; s < e.len; s += 5) if (inside(pointAt(e, s))) { this.entries.push({ edge: e, s: Math.max(0, s - 150) }); break; }
     }
+    if (this.entries.length) this.spawn(true);
   }
 
   dispose() { this.group.removeFromParent(); this.material.dispose(); }
@@ -246,12 +247,15 @@ export class Railway {
     }, { n: opts[0], c: -2 }).n;
   }
 
-  private spawn() {
+  /** `midway`: start already inside the map (used on load, so there's always a train to see). */
+  private spawn(midway = false) {
     if (!this.entries.length) return;
     const start = pick(this.entries), consist = makeConsist();
     const length = consist.cars.reduce((s, c) => s + c.len + 1, 0);
     const meshes = consist.cars.map(c => { const m = new THREE.Mesh(c.geo, this.material); m.castShadow = true; this.group.add(m); return m; });
-    this.trains.push({ meshes, cars: consist.cars, path: [start.edge], head: start.s, v: consist.speed * 0.85, vmax: consist.speed, length });
+    const train: Train = { meshes, cars: consist.cars, path: [start.edge], head: start.s + (midway ? 150 + length + rand(100, 400) : 0), v: consist.speed * 0.85, vmax: consist.speed, length, name: consist.name };
+    for (const m of meshes) m.userData.vehicle = { kind: 'train', train };
+    this.trains.push(train);
   }
 
   /** Point and rail-bed height at distance d along a train's path (d may run back past the start: clamped). */
@@ -271,8 +275,10 @@ export class Railway {
   update(dt: number) {
     dt = Math.min(dt, 0.05);
     if (!dt) return;
+    // always keep a train on the line: refill quickly when it's empty, sometimes add a second one
     this.nextSpawn -= dt;
-    if (this.nextSpawn <= 0 && this.trains.length < 2) { this.spawn(); this.nextSpawn = rand(25, 60); }
+    if (!this.trains.length && this.nextSpawn > 4) this.nextSpawn = rand(1, 4);
+    if (this.nextSpawn <= 0 && this.trains.length < 2) { this.spawn(); this.nextSpawn = rand(20, 45); }
 
     for (const t of [...this.trains]) {
       t.v += (t.vmax - t.v) * Math.min(1, dt * 0.3);
