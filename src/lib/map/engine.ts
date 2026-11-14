@@ -7,6 +7,10 @@ import type { Elevation, Imagery, LaserTrees } from './sources';
 import { obb, polyArea, roofGeometry, roofSpec } from './roofs';
 import { Traffic, type Car, type RoadWay } from './traffic';
 import { Railway, type RailWay, type Train } from './rail';
+import { Post, fitShadow, groundMaterial, installSky } from './look';
+import { Water } from './water';
+import { Forest, type TreeSpec } from './forest';
+import { HouseDetails, roofTexture, roofUVs, wallTexture } from './houses';
 import { bridgeGeometry, isBridge, isTunnel, makeDeckAt, type Bridge } from './bridges';
 import {
   FIELDS, GROUND, LAND, LAND_ORDER, PLACE_KINDS, ROAD, ROOFS, UNPAVED, WALLS, WATER, buildingHeight, pretty, type MapStyle,
@@ -14,8 +18,6 @@ import {
 
 export type BuildInput = { P: LocalProjection; data: OsmData; elev: Elevation | null; img: Imagery | null; laser: LaserTrees | null; R: number; exag: number; style: MapStyle };
 export type BuildStats = { buildings: number; trees: number; treeSource?: 'laser' | 'estimated'; elevMin: number | null; elevMax: number | null };
-/** One tree: local position, height and crown radius in meters. */
-type TreeSpec = { x: number; y: number; h: number; r: number };
 type Named = { name: string; kind: string };
 type Sample = (x: number, y: number, r?: number) => THREE.Color | null;
 type Label = { name: string; x: number; y: number; h: number; kind: 'place' | 'water'; el: HTMLDivElement };
@@ -30,8 +32,34 @@ function paint(g: THREE.BufferGeometry, hex: THREE.ColorRepresentation, roofHex?
     a[i * 3] = col.r; a[i * 3 + 1] = col.g; a[i * 3 + 2] = col.b;
   }
   g.setAttribute('color', new THREE.BufferAttribute(a, 3));
-  g.deleteAttribute('uv');
   return g;
+}
+/** Split a building into wall faces and roof faces (by facing), dropping hidden floors. Keeps uv + colour. */
+function splitFacing(g: THREE.BufferGeometry) {
+  const geo = g.index ? g.toNonIndexed() : g;
+  const names = ['position', 'normal', 'uv', 'color'] as const;
+  const walls: Record<string, number[]> = {}, roofs: Record<string, number[]> = {};
+  for (const n of names) { walls[n] = []; roofs[n] = []; }
+  const pos = geo.attributes.position, a = new THREE.Vector3(), b = new THREE.Vector3(), c = new THREE.Vector3();
+  for (let i = 0; i < pos.count; i += 3) {
+    a.fromBufferAttribute(pos, i); b.fromBufferAttribute(pos, i + 1); c.fromBufferAttribute(pos, i + 2);
+    const ny = c.clone().sub(b).cross(a.clone().sub(b)).normalize().y;
+    const out = ny > 0.25 ? roofs : ny > -0.5 ? walls : null;
+    if (!out) continue;
+    for (const n of names) {
+      const attr = geo.attributes[n], k = attr.itemSize;
+      for (let j = 0; j < 3; j++) for (let q = 0; q < k; q++) out[n].push(attr.array[(i + j) * k + q]);
+    }
+  }
+  const mk = (d: Record<string, number[]>) => {
+    const out = new THREE.BufferGeometry();
+    out.setAttribute('position', new THREE.Float32BufferAttribute(d.position, 3));
+    out.setAttribute('normal', new THREE.Float32BufferAttribute(d.normal, 3));
+    out.setAttribute('uv', new THREE.Float32BufferAttribute(d.uv, 2));
+    out.setAttribute('color', new THREE.Float32BufferAttribute(d.color, 3));
+    return out;
+  };
+  return { walls: mk(walls), roofs: mk(roofs) };
 }
 function clean(ring: XY[]) {
   const r = ring.slice();
@@ -94,8 +122,10 @@ export class MapEngine {
   private disposed = false;
   onUserInteract?: () => void;
   private lastNow = 0;
+  private frameNo = 0;
   private traffic: Traffic | null = null;
   private railway: Railway | null = null;
+  private water: Water | null = null;
   /** Follow cam: the vehicle being followed, and callbacks for the HUD. */
   private follow: { name: string; pose: () => { pos: THREE.Vector3; fwd: THREE.Vector3; kmh: number; back: number; up: number } | null; hudAt: number } | null = null;
   private followLook = new THREE.Vector3();
@@ -110,9 +140,14 @@ export class MapEngine {
     r.setSize(dom.container.clientWidth, dom.container.clientHeight);
     r.shadowMap.enabled = true;
     r.shadowMap.type = THREE.PCFSoftShadowMap;
+    r.shadowMap.autoUpdate = false; // refreshed every other frame in tick()
+    r.toneMapping = THREE.ACESFilmicToneMapping;
+    r.toneMappingExposure = 0.75;
     dom.container.appendChild(r.domElement);
 
-    this.scene.fog = new THREE.Fog(0xdfe9ec, 2600, 6500);
+    // haze toward the horizon, matched to the sky colour near the horizon
+    this.scene.fog = new THREE.Fog(0xc4d3de, 2600, 6500);
+    installSky(r, this.scene);
     this.camera = new THREE.PerspectiveCamera(45, dom.container.clientWidth / dom.container.clientHeight, 1, 14000);
     this.camera.position.set(0, 2000, 600);
     const c = this.controls = new MapControls(this.camera, r.domElement);
@@ -121,7 +156,9 @@ export class MapEngine {
     c.zoomToCursor = true;
     c.addEventListener('start', () => { this.fly = null; this.stopFollow(); this.onUserInteract?.(); });
 
-    this.scene.add(new THREE.HemisphereLight(0xeaf4ff, 0x5d7a4c, 1.35));
+    this.scene.add(new THREE.HemisphereLight(0xdfeaf5, 0x6b7a52, 0.35)); // sky light mostly comes from the environment map
+    this.sun.color.set(0xfff0dc);
+    this.sun.intensity = 3.4;
     this.sun.castShadow = true;
     this.sun.shadow.mapSize.set(4096, 4096);
     this.sun.shadow.bias = -0.0002;
@@ -133,17 +170,24 @@ export class MapEngine {
     r.domElement.addEventListener('pointerdown', e => { this.downAt = [e.clientX, e.clientY]; });
     r.domElement.addEventListener('pointerup', this.onClick);
     addEventListener('keydown', this.onKey);
+    addEventListener('keyup', this.onKeyUp);
+    addEventListener('blur', this.onBlur);
     r.domElement.addEventListener('pointerleave', this.hideTip);
+    this.post = new Post(r, this.scene, this.camera, dom.container.clientWidth, dom.container.clientHeight);
     r.setAnimationLoop(this.tick);
   }
+  private post: Post;
 
   dispose() {
     this.disposed = true;
     this.renderer.setAnimationLoop(null);
     removeEventListener('resize', this.onResize);
     removeEventListener('keydown', this.onKey);
+    removeEventListener('keyup', this.onKeyUp);
+    removeEventListener('blur', this.onBlur);
     this.clearWorld();
     this.controls.dispose();
+    this.post.dispose();
     this.renderer.dispose();
     this.renderer.domElement.remove();
     this.dom.labels.innerHTML = '';
@@ -156,12 +200,16 @@ export class MapEngine {
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();
     this.renderer.setSize(w, h);
+    this.post.setSize(w, h);
   };
 
   private tick = (now: number) => {
     const dt = this.lastNow ? (now - this.lastNow) / 1000 : 0;
     this.lastNow = now;
     if (this.trafficOn) { this.traffic?.update(dt); this.railway?.update(dt); }
+    this.water?.update(dt);
+    this.forest?.update(this.camera.position, now);
+    this.applyKeys(dt);
     if (this.follow) this.updateFollow(dt, now);
     else if (this.fly) {
       const f = this.fly, k = Math.min(1, (now - f.t0) / f.ms), e = 1 - Math.pow(1 - k, 3);
@@ -170,7 +218,10 @@ export class MapEngine {
       if (k >= 1) this.fly = null;
     }
     if (!this.follow) this.controls.update();
-    this.renderer.render(this.scene, this.camera);
+    const center = this.follow ? this.followLook : this.controls.target;
+    fitShadow(this.sun, center, this.camera.position.distanceTo(center), this.R * 1.35);
+    if ((this.frameNo++ & 1) === 0) this.renderer.shadowMap.needsUpdate = true;
+    this.post.render();
     this.updateLabels();
     this.dom.compass.style.transform = `rotate(${THREE.MathUtils.radToDeg(this.controls.getAzimuthalAngle())}deg)`;
   };
@@ -197,9 +248,21 @@ export class MapEngine {
     const target = new THREE.Vector3(x, h, -y);
     this.flyTo(target.clone().add(new THREE.Vector3(dist * 0.45, dist * 0.6, dist * 0.65)), target, 1200);
   }
+  /** Fixed camera views for visual comparison while developing: [lat, lon, distance, height factor]. */
+  debugView(lat: number, lon: number, dist: number, heightK = 0.6, yaw = 0.6) {
+    const ctx = this.treeCtx;
+    if (!ctx) return;
+    this.stopFollow();
+    const [x, y] = ctx.P.proj(lat, lon), h = ctx.H(x, y);
+    const target = new THREE.Vector3(x, h + 2, -y);
+    this.fly = null;
+    this.controls.target.copy(target);
+    this.camera.position.copy(target).add(new THREE.Vector3(Math.sin(yaw) * dist, dist * heightK, Math.cos(yaw) * dist));
+    this.camera.lookAt(target);
+  }
   home() { if (this.homeView) this.flyTo(this.homeView.pos.clone(), this.homeView.target.clone(), 1200); }
   screenshot() {
-    this.renderer.render(this.scene, this.camera);
+    this.post.render();
     return this.renderer.domElement.toDataURL('image/png');
   }
 
@@ -211,17 +274,20 @@ export class MapEngine {
     this.world.traverse(o => {
       const m = o as THREE.Mesh;
       m.geometry?.dispose();
-      const mat = m.material as THREE.MeshLambertMaterial | undefined;
+      const mat = m.material as THREE.MeshStandardMaterial | undefined;
       mat?.map?.dispose(); mat?.dispose?.();
     });
     this.scene.remove(this.world);
     this.world = null;
-    this.treeGroup = null;
+    this.forest?.dispose();
+    this.forest = null;
     this.treeCtx = null;
     this.traffic?.dispose();
     this.traffic = null;
     this.railway?.dispose();
     this.railway = null;
+    this.water?.dispose();
+    this.water = null;
   }
 
   build({ P, data, elev, img, laser, R, exag, style }: BuildInput, animate: boolean): BuildStats {
@@ -246,16 +312,16 @@ export class MapEngine {
     let minY = Infinity;
     for (let i = 0; i < pos.count; i++) { const y = H(pos.getX(i), -pos.getZ(i)); pos.setY(i, y); minY = Math.min(minY, y); }
     g.computeVertexNormals();
-    const ground = new THREE.Mesh(g, new THREE.MeshLambertMaterial({ map: tex }));
+    const ground = new THREE.Mesh(g, groundMaterial(tex, R));
     ground.receiveShadow = true;
     world.add(ground);
     world.add(this.skirt(H, R, seg, minY - 30));
 
     // buildings (sunk below the lowest footprint point), named things, places
-    const buildings: THREE.BufferGeometry[] = [], treePts: XY[] = [], places: { name: string; xy: XY }[] = [];
+    const wallGeos: THREE.BufferGeometry[] = [], roofGeos: THREE.BufferGeometry[] = [], details = new HouseDetails(), treePts: XY[] = [], places: { name: string; xy: XY }[] = [];
     const named: typeof this.named = { buildings: [], roads: [], areas: [] };
     let buildingCount = 0;
-    const drivable: RoadWay[] = [], bridges: Bridge[] = [], railWays: RailWay[] = [];
+    const drivable: RoadWay[] = [], bridges: Bridge[] = [], railWays: RailWay[] = [], lakes: Poly[] = [];
 
     const inside = ([x, y]: XY) => Math.abs(x) < R && Math.abs(y) < R;
     for (const el of data.elements) {
@@ -284,8 +350,16 @@ export class MapEngine {
             const real = roofTints.get(p) ?? null;
             const roof: THREE.ColorRepresentation = real ? real.clone().multiplyScalar(1.1) : church ? '#55504b' : pick(ROOFS);
             const wall = wallFor(real, church ? 'church' : barn ? 'barn' : 'house');
-            buildings.push(paint(geo, wall, roof));
-            if (spec.type !== 'flat') buildings.push(paint(roofGeometry(box, spec, hi + walls), wall, roof));
+            const parts = [paint(geo, wall, roof)];
+            if (spec.type !== 'flat') parts.push(paint(roofUVs(roofGeometry(box, spec, hi + walls), box, spec), wall, roof));
+            for (const g of parts) { const sp = splitFacing(g); wallGeos.push(sp.walls); roofGeos.push(sp.roofs); g.dispose(); }
+            // windows, a front door, and a chimney on most pitched house roofs
+            const b = t.building, lv = parseFloat(t['building:levels']);
+            const kind = church ? 'church' : /barn|farm_auxiliary|stable|cowshed/.test(b) ? 'barn'
+              : /garage|garages|shed|carport|greenhouse|roof|hut/.test(b) ? 'shed'
+              : /apartments|industrial|commercial|retail|office|school|warehouse|hospital|public/.test(b) || lv >= 3 ? 'big' : 'house';
+            details.addWalls(p, hi, hi + walls, kind, el.id);
+            if (kind === 'house' && spec.type !== 'flat' && el.id % 10 < 7) details.addChimney(box, hi + walls + (box.short / 2) * Math.tan(spec.pitch * Math.PI / 180), el.id);
             buildingCount++;
           } catch { /* degenerate footprint */ }
           named.buildings.push({
@@ -310,6 +384,7 @@ export class MapEngine {
           deckAt: isBridge(t) ? makeDeckAt(pts, H) : undefined, tunnel: isTunnel(t),
         });
       }
+      if (t.natural === 'water' || t.waterway === 'riverbank' || t.landuse === 'reservoir' || t.landuse === 'basin') lakes.push(...polygons(P, el));
       if (!t.name) continue;
       if (t.highway && el.geometry) named.roads.push({ pts: toXY(P, el.geometry), w: ROAD[t.highway]?.[0] ?? 3, name: t.name, kind: pretty(t.highway) + ' road' });
       else if (t.waterway && el.geometry && t.waterway !== 'riverbank') named.roads.push({ pts: toXY(P, el.geometry), w: 4, name: t.name, kind: pretty(t.waterway) });
@@ -319,19 +394,27 @@ export class MapEngine {
       }
     }
     this.named = named;
-    if (buildings.length) {
-      const b = new THREE.Mesh(mergeGeometries(buildings), new THREE.MeshLambertMaterial({ vertexColors: true }));
-      b.castShadow = b.receiveShadow = true;
-      world.add(b);
-    }
+    const addBuildingMesh = (geos: THREE.BufferGeometry[], map: THREE.Texture, roughness: number) => {
+      if (!geos.length) return;
+      const m = new THREE.Mesh(mergeGeometries(geos), new THREE.MeshStandardMaterial({ vertexColors: true, map, roughness }));
+      m.castShadow = m.receiveShadow = true;
+      world.add(m);
+    };
+    addBuildingMesh(wallGeos, wallTexture(), 0.85);
+    addBuildingMesh(roofGeos, roofTexture(), 0.75);
+    details.finish();
+    world.add(details.group);
 
     // bridges (the bare-earth terrain has none)
     const decks = bridges.flatMap(b => bridgeGeometry(b, H));
     if (decks.length) {
-      const m = new THREE.Mesh(mergeGeometries(decks), new THREE.MeshLambertMaterial({ vertexColors: true, side: THREE.DoubleSide }));
+      const m = new THREE.Mesh(mergeGeometries(decks), new THREE.MeshStandardMaterial({ vertexColors: true, side: THREE.DoubleSide }));
       m.castShadow = m.receiveShadow = true;
       world.add(m);
     }
+
+    // lakes with real water surfaces
+    if (lakes.length) { this.water = new Water(lakes, H); world.add(this.water.group); }
 
     // railway track + trains
     if (railWays.length) {
@@ -373,7 +456,7 @@ export class MapEngine {
   }
 
   private treeCtx: { world: THREE.Group; P: LocalProjection; R: number; H: (x: number, y: number) => number; sample: Sample | null; buildings: Poly[]; bridges: Bridge[] } | null = null;
-  private treeGroup: THREE.Group | null = null;
+  private forest: Forest | null = null;
 
   setTraffic(on: boolean) {
     this.trafficOn = on;
@@ -385,14 +468,12 @@ export class MapEngine {
   private replaceTrees(trees: TreeSpec[]) {
     const ctx = this.treeCtx;
     if (!ctx) return;
-    if (this.treeGroup) {
-      this.treeGroup.traverse(o => { const m = o as THREE.Mesh; m.geometry?.dispose(); (m.material as THREE.Material | undefined)?.dispose?.(); });
-      this.treeGroup.removeFromParent();
-    }
-    this.treeGroup = new THREE.Group();
-    ctx.world.add(this.treeGroup);
-    this.addTrees(this.treeGroup, trees, ctx.H, ctx.sample);
+    this.forest?.dispose();
+    this.forest = new Forest(trees, ctx.H, ctx.sample);
+    ctx.world.add(this.forest.group);
+    this.forest.update(this.camera.position, performance.now() + 1e6);
   }
+
 
   /** Replace the trees with laser-measured ones (can arrive after the map is already shown). Returns the count. */
   setLaserTrees(laser: LaserTrees) {
@@ -466,7 +547,7 @@ export class MapEngine {
     g.setAttribute('position', new THREE.Float32BufferAttribute(sp, 3));
     g.setAttribute('color', new THREE.Float32BufferAttribute(sc, 3));
     g.setIndex(si); g.computeVertexNormals();
-    return new THREE.Mesh(g, new THREE.MeshLambertMaterial({ vertexColors: true, side: THREE.DoubleSide }));
+    return new THREE.Mesh(g, new THREE.MeshStandardMaterial({ vertexColors: true, side: THREE.DoubleSide }));
   }
 
   private frame(R: number, mid: number, animate: boolean) {
@@ -475,11 +556,6 @@ export class MapEngine {
       new THREE.Plane(new THREE.Vector3(1, 0, 0), cl), new THREE.Plane(new THREE.Vector3(-1, 0, 0), cl),
       new THREE.Plane(new THREE.Vector3(0, 0, 1), cl), new THREE.Plane(new THREE.Vector3(0, 0, -1), cl),
     ];
-    this.sun.position.set(R * 0.9, mid + R * 0.75, R * 0.35);
-    this.sun.target.position.set(0, mid, 0);
-    const sc = this.sun.shadow.camera;
-    sc.left = sc.bottom = -R * 1.35; sc.right = sc.top = R * 1.35; sc.near = 1; sc.far = R * 4;
-    sc.updateProjectionMatrix();
     const fog = this.scene.fog as THREE.Fog;
     fog.near = R * 2.2; fog.far = R * 5.5;
     const fit = this.camera.aspect < 1 ? 1 / Math.sqrt(this.camera.aspect) : 1; // portrait screens stand further back
@@ -563,11 +639,9 @@ export class MapEngine {
 
     if (style !== 'satellite' || !photo) {
       ctx.globalAlpha = photo ? 0.85 : 1;
-      if (waterPolys.length) {
-        ctx.save(); ctx.shadowColor = 'rgba(30,70,100,.35)'; ctx.shadowBlur = 6 * k; fill(waterPolys, WATER); ctx.restore();
-        ctx.lineWidth = Math.max(2 * k, 1); ctx.strokeStyle = 'rgba(200,230,245,.55)';
-        ctx.beginPath(); for (const p of waterPolys) { trace(p.outer); ctx.closePath(); } ctx.stroke();
-      }
+      // lake beds: dark and wet-looking; the actual water surface is a 3D mesh (water.ts), and wherever the bank
+      // rises above the water level this is what shows, so it must read as shore, not as painted water
+      if (waterPolys.length) { ctx.save(); ctx.globalAlpha = 1; fill(waterPolys, '#3b4a43'); ctx.restore(); }
       waterLines.forEach(l => stroke(l.pts, l.w, WATER));
       roads.sort((a, b) => a.w - b.w);
       roads.filter(r => r.paved).forEach(r => stroke(r.pts, r.w + 1.4, '#4d4a45'));
@@ -604,59 +678,7 @@ export class MapEngine {
     };
   }
 
-  /**
-   * Instanced low-poly trees scaled to each tree's height and crown radius.
-   * With an aerial photo, darker canopies become conifers and lighter ones broadleaf (spruce reads darker from above).
-   */
-  private addTrees(world: THREE.Group, trees: TreeSpec[], H: (x: number, y: number) => number, sample: Sample | null) {
-    if (!trees.length) return;
-    // unit shapes: conifer is 10 m tall with a 2.6 m crown, broadleaf 8.9 m tall with a 3.4 m crown
-    const conifer = new THREE.ConeGeometry(2.6, 8, 6).translate(0, 6, 0);
-    const broad = new THREE.IcosahedronGeometry(3.4, 0).translate(0, 5.5, 0);
-    const trunk = new THREE.CylinderGeometry(0.35, 0.5, 2.6, 5).translate(0, 1.3, 0);
 
-    const photo = trees.map(t => sample?.(t.x, t.y, 1) ?? null);
-    const light = photo.map(c => c ? c.getHSL({ h: 0, s: 0, l: 0 }).l : NaN);
-    const known = light.filter(l => !Number.isNaN(l)).sort((a, b) => a - b);
-    const darkCut = known.length ? known[Math.floor(known.length * 0.45)] : 0;
-    const isConifer = trees.map((_, i) => Number.isNaN(light[i]) ? Math.random() < 0.5 : light[i] <= darkCut);
-
-    const nC = isConifer.filter(Boolean).length;
-    const make = (geo: THREE.BufferGeometry, color: string, n: number) => {
-      const mat = new THREE.MeshLambertMaterial({ color, flatShading: true });
-      // dissolve trees right in front of the camera (dithered), so a low chase/zoom camera isn't stuck inside crowns
-      mat.onBeforeCompile = sh => {
-        sh.fragmentShader = sh.fragmentShader.replace('void main() {', `void main() {
-          float camD = length(vViewPosition);
-          if (camD < 14.0 && fract(sin(dot(gl_FragCoord.xy, vec2(12.9898, 78.233))) * 43758.5453) > (camD - 4.0) / 10.0) discard;`);
-      };
-      const m = new THREE.InstancedMesh(geo, mat, Math.max(n, 1));
-      m.count = n; m.castShadow = true;
-      return m;
-    };
-    const mc = make(conifer, '#ffffff', nC), mb = make(broad, '#ffffff', trees.length - nC), mt = make(trunk, '#6b4f36', trees.length);
-    const M = new THREE.Matrix4(), q = new THREE.Quaternion(), s = new THREE.Vector3(), v = new THREE.Vector3(), col = new THREE.Color(), up = new THREE.Vector3(0, 1, 0);
-    let ic = 0, ib = 0;
-    trees.forEach((t, i) => {
-      const con = isConifer[i], ground = H(t.x, t.y) - 0.3;
-      q.setFromAxisAngle(up, rand(0, Math.PI * 2));
-      v.set(t.x, ground, -t.y);
-      const sy = t.h / (con ? 10 : 8.9), sxz = t.r / (con ? 2.6 : 3.4);
-      M.compose(v, q, s.set(sxz, sy, sxz));
-      const mesh = con ? mc : mb, k = con ? ic++ : ib++;
-      mesh.setMatrixAt(k, M);
-      const real = photo[i];
-      if (real) {
-        // take the photo's hue but keep it leafy: clamp toward green and lift brightness for the shaded canopy
-        const hsl = real.getHSL({ h: 0, s: 0, l: 0 });
-        mesh.setColorAt(k, col.setHSL(THREE.MathUtils.clamp(hsl.h, 0.16, 0.4), Math.max(hsl.s, 0.3), THREE.MathUtils.clamp(hsl.l * 1.5, 0.18, 0.4)));
-      } else mesh.setColorAt(k, col.setHSL((con ? 0.36 : 0.27) + rand(-0.03, 0.03), rand(0.35, 0.5), rand(0.22, 0.32)));
-      const tw = Math.min(1.6, Math.max(0.6, t.r / 2.8));
-      M.compose(v, q, s.set(tw, sy, tw));
-      mt.setMatrixAt(i, M);
-    });
-    world.add(mc, mb, mt);
-  }
 
   // ---------- labels ----------
 
@@ -735,7 +757,64 @@ export class MapEngine {
     else this.stopFollow();
   };
 
-  private onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') this.stopFollow(); };
+  // ---------- keyboard ----------
+
+  private held = new Set<string>();
+  private static MOVE_KEYS = new Set(['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', '+', '=', '-', '_']);
+
+  private onKey = (e: KeyboardEvent) => {
+    if (e.key === 'Escape') return this.stopFollow();
+    const el = e.target as HTMLElement | null;
+    if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable)) return;
+    if (!MapEngine.MOVE_KEYS.has(e.key) || e.metaKey || e.ctrlKey || e.altKey) return;
+    e.preventDefault();
+    const fresh = !this.held.has(e.key);
+    this.held.add(e.key);
+    this.shift = e.shiftKey;
+    if (this.follow) this.stopFollow();
+    this.fly = null;
+    this.onUserInteract?.();
+    // a quick tap is released before the next frame: give each fresh press a small step of its own
+    if (fresh) this.applyKeys(0.08);
+  };
+  private onKeyUp = (e: KeyboardEvent) => { this.held.delete(e.key); this.shift = e.shiftKey; };
+  private onBlur = () => this.held.clear();
+  private shift = false;
+
+  /**
+   * Smooth movement while keys are held: arrows pan along the ground (speed scales with zoom),
+   * Shift+arrows orbit / tilt, +/- zoom.
+   */
+  private applyKeys(dt: number) {
+    if (!this.held.size || this.follow) return;
+    const h = this.held, target = this.controls.target, cam = this.camera.position;
+    const offset = cam.clone().sub(target), dist = offset.length();
+    const x = (h.has('ArrowRight') ? 1 : 0) - (h.has('ArrowLeft') ? 1 : 0);
+    const y = (h.has('ArrowUp') ? 1 : 0) - (h.has('ArrowDown') ? 1 : 0);
+    const z = (h.has('+') || h.has('=') ? 1 : 0) - (h.has('-') || h.has('_') ? 1 : 0);
+    if (this.shift && (x || y)) {
+      const sph = new THREE.Spherical().setFromVector3(offset);
+      sph.theta -= x * 1.6 * dt;
+      sph.phi = THREE.MathUtils.clamp(sph.phi + y * 0.9 * dt, 0.15, this.controls.maxPolarAngle); // Shift+Up tilts toward the horizon
+      cam.copy(target).add(new THREE.Vector3().setFromSpherical(sph));
+    } else if (x || y) {
+      const fwd = new THREE.Vector3(-offset.x, 0, -offset.z).normalize(), right = new THREE.Vector3(-fwd.z, 0, fwd.x);
+      const step = Math.max(10, dist * 0.5) * dt;
+      const move = fwd.multiplyScalar(y * step).addScaledVector(right, x * step);
+      // stay inside the map
+      const lim = this.R;
+      move.x = THREE.MathUtils.clamp(target.x + move.x, -lim, lim) - target.x;
+      move.z = THREE.MathUtils.clamp(target.z + move.z, -lim, lim) - target.z;
+      target.add(move); cam.add(move);
+      // keep the target on the terrain so the view doesn't sink into hills
+      const dy = this.H(target.x, -target.z) - target.y;
+      target.y += dy; cam.y += dy;
+    }
+    if (z) {
+      const len = THREE.MathUtils.clamp(dist * Math.exp(-z * 1.4 * dt), this.controls.minDistance, this.controls.maxDistance);
+      cam.copy(target).add(offset.setLength(len));
+    }
+  }
 
   get following() { return !!this.follow; }
 

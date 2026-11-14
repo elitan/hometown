@@ -225,7 +225,7 @@ export default function Hometown() {
       </div>
 
       <div id="hint" className={'glass' + (hint ? '' : ' gone')}>
-        <span><b>Drag</b> to pan</span><span><b>Right-drag</b> to rotate</span><span><b>Scroll</b> to zoom</span><span><b>Click</b> a car or train to follow it</span>
+        <span><b>Drag</b> or <b>arrows</b> to move</span><span><b>Right-drag</b> or <b>Shift+arrows</b> to rotate</span><span><b>Scroll</b> or <b>+/−</b> to zoom</span><span><b>Click</b> a car or train to follow it</span>
       </div>
 
       <Loader open={loaderOpen} steps={steps} error={error} />

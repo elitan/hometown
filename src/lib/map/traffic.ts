@@ -96,35 +96,55 @@ function colored(g: THREE.BufferGeometry, hex: string) {
 }
 
 const modelCache = new Map<string, THREE.BufferGeometry>();
+/** Material slots for car parts: glossy paint, glass, tyres, rims, lamps. */
+const SLOT = { paint: 0, glass: 1, tire: 2, rim: 3, lamp: 4 } as const;
+
 function carGeometry(v: Variant, paint: string) {
   const key = v + paint;
   if (modelCache.has(key)) return modelCache.get(key)!;
-  const glass = '#1e2a33', tire = '#1b1b1d', parts: THREE.BufferGeometry[] = [];
+  const parts: [THREE.BufferGeometry, number][] = [];
+  const add = (g: THREE.BufferGeometry, hex: string, slot: number) => parts.push([colored(g, hex), slot]);
   const L = v === 'van' ? 4.9 : 4.6, W = 1.84, half = L / 2;
   // lower body
-  parts.push(colored(slab([[-half, 0.32], [half, 0.32], [half + 0.02, 0.68], [half - 0.25, 0.86], [-half + 0.1, 0.9], [-half, 0.7]], W), paint));
+  add(slab([[-half, 0.32], [half, 0.32], [half + 0.02, 0.68], [half - 0.25, 0.86], [-half + 0.1, 0.9], [-half, 0.7]], W, 0.08), paint, SLOT.paint);
   // greenhouse (glass) + roof
   if (v === 'van') {
-    parts.push(colored(slab([[half - 0.35, 0.86], [half - 1.0, 1.55], [-half + 0.05, 1.55], [-half + 0.05, 0.9]], W - 0.08, 0.04), glass));
-    parts.push(colored(slab([[half - 1.05, 1.52], [-half + 0.02, 1.52], [-half + 0.02, 1.95], [half - 1.2, 1.95]], W, 0.05), paint));
-    parts.push(colored(slab([[half - 0.6, 0.88], [-half + 0.1, 0.88], [-half + 0.1, 1.5], [half - 0.95, 1.5]], W + 0.01, 0.03), paint)); // panel van sides
+    add(slab([[half - 0.35, 0.86], [half - 1.0, 1.55], [-half + 0.05, 1.55], [-half + 0.05, 0.9]], W - 0.08, 0.04), '#1e2a33', SLOT.glass);
+    add(slab([[half - 1.05, 1.52], [-half + 0.02, 1.52], [-half + 0.02, 1.95], [half - 1.2, 1.95]], W, 0.06), paint, SLOT.paint);
+    add(slab([[half - 0.6, 0.88], [-half + 0.1, 0.88], [-half + 0.1, 1.5], [half - 0.95, 1.5]], W + 0.01, 0.03), paint, SLOT.paint); // panel van sides
   } else {
     const rearX = v === 'estate' ? -half + 0.12 : -half + 0.75, rearTop = v === 'estate' ? -half + 0.18 : -half + 1.15;
-    parts.push(colored(slab([[half - 0.45, 0.86], [half - 1.35, 1.38], [rearTop, 1.4], [rearX, 0.9]], W - 0.14, 0.04), glass));
-    parts.push(colored(slab([[half - 1.38, 1.37], [rearTop + 0.02, 1.39], [rearTop + 0.02, 1.45], [half - 1.45, 1.43]], W - 0.18, 0.03), paint));
+    add(slab([[half - 0.45, 0.86], [half - 1.35, 1.38], [rearTop, 1.4], [rearX, 0.9]], W - 0.14, 0.04), '#1e2a33', SLOT.glass);
+    add(slab([[half - 1.38, 1.37], [rearTop + 0.02, 1.39], [rearTop + 0.02, 1.45], [half - 1.45, 1.43]], W - 0.18, 0.03), paint, SLOT.paint);
   }
-  // wheels
-  const wheel = new THREE.CylinderGeometry(0.33, 0.33, 0.24, 14).rotateX(Math.PI / 2);
-  for (const x of [half - 0.85, -half + 0.85]) for (const z of [-W / 2 + 0.1, W / 2 - 0.1]) parts.push(colored(wheel.clone().translate(x, 0.33, z), tire));
+  // wheels with rims
+  const wheel = new THREE.CylinderGeometry(0.33, 0.33, 0.24, 18).rotateX(Math.PI / 2);
+  const rim = new THREE.CylinderGeometry(0.2, 0.2, 0.26, 12).rotateX(Math.PI / 2);
+  for (const x of [half - 0.85, -half + 0.85]) for (const z of [-W / 2 + 0.1, W / 2 - 0.1]) {
+    add(wheel.clone().translate(x, 0.33, z), '#1b1b1d', SLOT.tire);
+    add(rim.clone().translate(x, 0.33, z), '#b9bcc0', SLOT.rim);
+  }
   // lights
   const lamp = new THREE.BoxGeometry(0.06, 0.12, 0.34);
   for (const z of [-0.62, 0.62]) {
-    parts.push(colored(lamp.clone().translate(half + 0.02, 0.68, z), '#fff4cf'));
-    parts.push(colored(lamp.clone().translate(-half - 0.02, 0.72, z), '#c4231c'));
+    add(lamp.clone().translate(half + 0.02, 0.68, z), '#fff4cf', SLOT.lamp);
+    add(lamp.clone().translate(-half - 0.02, 0.72, z), '#c4231c', SLOT.lamp);
   }
-  const g = mergeGeometries(parts.map(p => p.index ? p.toNonIndexed() : p));
+  const g = mergeGeometries(parts.map(([p]) => p.index ? p.toNonIndexed() : p), true);
+  g.groups.forEach((grp, i) => { grp.materialIndex = parts[i][1]; });
   modelCache.set(key, g);
   return g;
+}
+
+/** Car paint with a clear coat, reflective glass, rubber, metal rims, slightly glowing lamps. */
+function carMaterials(): THREE.Material[] {
+  return [
+    new THREE.MeshPhysicalMaterial({ vertexColors: true, roughness: 0.38, metalness: 0.35, clearcoat: 0.9, clearcoatRoughness: 0.08 }),
+    new THREE.MeshStandardMaterial({ color: '#1a232b', roughness: 0.05, metalness: 0.3, envMapIntensity: 3 }),
+    new THREE.MeshStandardMaterial({ color: '#1b1b1d', roughness: 0.9 }),
+    new THREE.MeshStandardMaterial({ color: '#c3c6ca', roughness: 0.3, metalness: 0.9 }),
+    new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.3, emissive: '#fff4cf', emissiveIntensity: 0.15 }),
+  ];
 }
 
 // ---------- cars ----------
@@ -135,7 +155,7 @@ export class Traffic {
   readonly group = new THREE.Group();
   private edges: Edge[]; private out: Map<string, number[]>;
   private cars: Car[] = [];
-  private material = new THREE.MeshLambertMaterial({ vertexColors: true, flatShading: true });
+  private material = carMaterials();
 
   constructor(ways: RoadWay[], private H: Height, private R: number) {
     ({ edges: this.edges, out: this.out } = buildGraph(ways));
@@ -147,7 +167,7 @@ export class Traffic {
 
   dispose() {
     this.group.removeFromParent();
-    this.material.dispose();
+    for (const m of this.material) m.dispose();
   }
 
   private spawn(pool: Edge[], total: number, car?: Car) {

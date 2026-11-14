@@ -97,6 +97,9 @@ form.search input { flex: 1; min-width: 0; border: 0; outline: 0; background: tr
 .pill-btn.on { color: var(--text); }
 .pill-btn.on svg { color: var(--accent); }
 
+/* clean mode for screenshots: document.body.classList.add('clean') */
+.clean #top, .clean #card, .clean #nav, .clean #attrib, .clean #hint, .clean #labels, .clean #loader, .clean #follow { display: none !important; }
+
 /* follow cam */
 #follow { position: fixed; right: 16px; top: 16px; display: flex; align-items: center; gap: 12px; padding: 8px 8px 8px 14px; border-radius: 999px; font-size: 13.5px; white-space: nowrap; }
 #follow b { font-weight: 600; }

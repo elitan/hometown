@@ -178,7 +178,7 @@ export class Railway {
   private edges: Edge[] = []; private out = new Map<string, number[]>();
   private surface = new Map<number, Height>(); // edge id -> rail-bed height
   readonly trains: Train[] = [];
-  private material = new THREE.MeshLambertMaterial({ vertexColors: true, flatShading: true });
+  private material = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.42, metalness: 0.3 }); // semi-gloss paint
   private nextSpawn = rand(1, 4);
   private entries: Entry[] = [];
 
@@ -209,13 +209,13 @@ export class Railway {
     }
     const add = (geos: THREE.BufferGeometry[]) => {
       if (!geos.length) return;
-      const m = new THREE.Mesh(mergeGeometries(geos), new THREE.MeshLambertMaterial({ vertexColors: true, side: THREE.DoubleSide }));
+      const m = new THREE.Mesh(mergeGeometries(geos), new THREE.MeshStandardMaterial({ vertexColors: true, side: THREE.DoubleSide }));
       m.receiveShadow = true; m.castShadow = false;
       this.group.add(m);
     };
     add(ballast); add(steel);
     if (sleepers.length) {
-      const im = new THREE.InstancedMesh(new THREE.BoxGeometry(0.24, 0.14, 2.6), new THREE.MeshLambertMaterial({ color: '#9b978e' }), sleepers.length);
+      const im = new THREE.InstancedMesh(new THREE.BoxGeometry(0.24, 0.14, 2.6), new THREE.MeshStandardMaterial({ color: '#9b978e' }), sleepers.length);
       sleepers.forEach((m, i) => im.setMatrixAt(i, m));
       im.receiveShadow = true;
       this.group.add(im);
