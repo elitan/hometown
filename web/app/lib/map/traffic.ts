@@ -143,9 +143,13 @@ function lampMaterial() {
   return m;
 }
 
-/** Headlight beam on the road, as a child of a vehicle whose local +x is forward and y = 0 the ground. */
-export function headlightBeam(material: THREE.Material, front: number, length: number, width: number, y = 0.12) {
-  const m = new THREE.Mesh(new THREE.PlaneGeometry(length, width).rotateX(-Math.PI / 2).translate(front + length / 2, y, 0), material);
+/**
+ * Headlight beam on the road, as a child of a vehicle whose local +x is forward and y = 0 the ground.
+ * `side` moves it to one lamp (local z) and `toe` turns it slightly outward (radians).
+ */
+export function headlightBeam(material: THREE.Material, front: number, length: number, width: number, y = 0.12, side = 0, toe = 0) {
+  const g = new THREE.PlaneGeometry(length, width).rotateX(-Math.PI / 2).translate(length / 2, y, 0).rotateY(toe).translate(front, 0, side);
+  const m = new THREE.Mesh(g, material);
   m.renderOrder = 2;
   m.raycast = () => {}; // not clickable: clicks go to the vehicle
   return m;
@@ -199,7 +203,8 @@ export class Traffic {
     const c: Car = car ?? { mesh, edge: e, next: e, prev: null, s: 0, v: 0, vmax: 1, heading: 0 };
     if (!car) {
       mesh.userData.vehicle = { kind: 'car', car: c, name: v === 'van' ? 'Van' : v === 'estate' ? 'Estate car' : 'Saloon car' };
-      mesh.add(headlightBeam(this.beam, v === 'van' ? 2.45 : 2.3, 16, 6));
+      // one beam per headlight, toed out a little, overlapping further ahead
+      for (const z of [-0.62, 0.62]) mesh.add(headlightBeam(this.beam, v === 'van' ? 2.45 : 2.3, 18, 5.5, 0.12, z, -Math.sign(z) * 0.08));
     }
     c.edge = e; c.prev = null; c.s = rand(0, e.len); c.next = this.chooseNext(e);
     c.vmax = rand(0.85, 1.05); c.v = Math.min(e.speed * c.vmax, 8);
@@ -241,7 +246,7 @@ export class Traffic {
   }
 
   /** Night: how bright the headlight beams on the road are (0..1). */
-  setLights(f: number) { this.beam.opacity = 0.55 * f; this.beam.visible = f > 0.01; }
+  setLights(f: number) { this.beam.opacity = 0.4 * f; this.beam.visible = f > 0.01; }
 
   update(dt: number) {
     dt = Math.min(dt, 0.05);

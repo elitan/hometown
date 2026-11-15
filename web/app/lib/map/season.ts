@@ -190,8 +190,9 @@ export function beamTexture() {
   const W = 128, H = 64, cv = document.createElement('canvas'); cv.width = W; cv.height = H;
   const ctx = cv.getContext('2d')!, img = ctx.createImageData(W, H);
   for (let x = 0; x < W; x++) for (let y = 0; y < H; y++) {
-    const u = x / (W - 1), v = Math.abs(y / (H - 1) - 0.5) * 2, half = 0.25 + 0.75 * u;
-    const across = Math.max(0, 1 - v / half), a = Math.pow(1 - u, 1.6) * across * across * Math.min(1, u * 12);
+    const u = x / (W - 1), v = Math.abs(y / (H - 1) - 0.5) * 2, half = 0.45 + 0.55 * u;
+    const t = Math.max(0, 1 - v / half), across = t * t * (3 - 2 * t); // soft-edged, wide core
+    const a = Math.pow(1 - u, 1.4) * across * Math.min(1, u * 10);
     const o = (y * W + x) * 4;
     img.data[o] = img.data[o + 1] = img.data[o + 2] = Math.round(255 * a); img.data[o + 3] = 255;
   }
