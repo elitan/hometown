@@ -1,6 +1,7 @@
 // House detail: wall/roof textures (Swedish wood panelling, roof tile rows), instanced windows with white
 // frames and reflective glass, front doors and chimneys — the things that stop houses reading as boxes.
 import * as THREE from 'three';
+import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { pip, type Poly, type XY } from './geo';
 import type { OBB, RoofSpec } from './roofs';
 
@@ -63,6 +64,9 @@ export function roofUVs(g: THREE.BufferGeometry, box: OBB, spec: RoofSpec) {
   return g;
 }
 
+/** Height of the stone plinth the walls stand on (engine.ts draws it). */
+export const PLINTH = 0.45;
+
 type Kind = 'house' | 'barn' | 'church' | 'big' | 'shed';
 
 export class HouseDetails {
@@ -71,6 +75,8 @@ export class HouseDetails {
   private glass: THREE.Matrix4[] = [];
   private doors: THREE.Matrix4[] = [];
   private chimneys: THREE.Matrix4[] = [];
+  private corners: THREE.Matrix4[] = [];
+  private trim: THREE.Matrix4[] = [];
 
   /**
    * Windows (and a door) along each wall of a footprint. `ground` is the highest ground point of the footprint,
@@ -87,6 +93,19 @@ export class HouseDetails {
     const spacing = kind === 'barn' ? 6 : kind === 'big' ? 3.2 : 2.6;
     let longest = -1, longestLen = 0;
     ring.forEach((a, i) => { const b = ring[(i + 1) % ring.length], l = Math.hypot(b[0] - a[0], b[1] - a[1]); if (l > longestLen) { longestLen = l; longest = i; } });
+
+    // white corner boards on wooden houses and barns (the falu-red-with-white-trim look)
+    if (kind === 'house' || kind === 'barn') {
+      const h = wallTop - (ground + PLINTH);
+      ring.forEach((v, i) => {
+        const prev = ring[(i + ring.length - 1) % ring.length], next = ring[(i + 1) % ring.length];
+        const a1 = Math.atan2(v[1] - prev[1], v[0] - prev[0]), a2 = Math.atan2(next[1] - v[1], next[0] - v[0]);
+        let turn = Math.abs(a2 - a1); if (turn > Math.PI) turn = 2 * Math.PI - turn;
+        if (turn < 0.5) return; // not a real corner
+        const q = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), a2);
+        this.corners.push(new THREE.Matrix4().compose(new THREE.Vector3(v[0], ground + PLINTH + h / 2, -v[1]), q, new THREE.Vector3(1, h, 1)));
+      });
+    }
 
     ring.forEach((a, i) => {
       const b: XY = ring[(i + 1) % ring.length], dx = b[0] - a[0], dy = b[1] - a[1], L = Math.hypot(dx, dy);
@@ -129,6 +148,54 @@ export class HouseDetails {
     this.chimneys.push(new THREE.Matrix4().compose(new THREE.Vector3(x, ridgeY - 0.3, -y), q, new THREE.Vector3(1, 1, 1)));
   }
 
+  /**
+   * Roof edge boards: a fascia under each eave and barge boards up each gable, so the roof has visible
+   * thickness and a painted edge instead of a paper-thin plane. `top` is the wall top (eave line).
+   */
+  addRoofTrim(box: OBB, spec: RoofSpec, top: number) {
+    if (spec.type === 'flat') return;
+    const { cx, cy, angle, long: L, short: S } = box;
+    const o = Math.min(0.5, S * 0.06), tan = Math.tan(spec.pitch * Math.PI / 180);
+    const eaveY = top - o * tan, ridgeY = top + (S / 2) * tan;
+    const c = Math.cos(angle), s = Math.sin(angle);
+    const P = (u: number, v: number, y: number) => new THREE.Vector3(cx + u * c - v * s, y, -(cy + u * s + v * c));
+    const Lu = L / 2 + o, Sv = S / 2 + o;
+    const board = (a: THREE.Vector3, b: THREE.Vector3, out: THREE.Vector3) => {
+      // a 1 x 1 x 1 box stretched from a to b, its thin side facing `out`
+      const dir = new THREE.Vector3().subVectors(b, a), len = dir.length();
+      const x = dir.normalize(), z = out.clone().sub(x.clone().multiplyScalar(out.dot(x))).normalize();
+      const y = new THREE.Vector3().crossVectors(z, x);
+      if (y.y > 0) { y.negate(); z.negate(); } // y points down, under the roof edge (the box is symmetric in z)
+      const q = new THREE.Quaternion().setFromRotationMatrix(new THREE.Matrix4().makeBasis(x, y, z));
+      const mid = a.clone().add(b).multiplyScalar(0.5).addScaledVector(y, 0.1);
+      this.trim.push(new THREE.Matrix4().compose(mid, q, new THREE.Vector3(len + 0.06, 1, 1)));
+    };
+    const side = (v: number) => new THREE.Vector3(-s * Math.sign(v), 0, -c * Math.sign(v));
+    const end = (u: number) => new THREE.Vector3(c * Math.sign(u), 0, -s * Math.sign(u));
+    if (spec.type === 'gabled') {
+      for (const v of [-Sv, Sv]) board(P(-Lu, v, eaveY), P(Lu, v, eaveY), side(v));
+      for (const u of [-Lu, Lu]) for (const v of [-Sv, Sv]) board(P(u, v, eaveY), P(u, 0, ridgeY), end(u));
+    } else {
+      for (const v of [-Sv, Sv]) board(P(-Lu, v, eaveY), P(Lu, v, eaveY), side(v));
+      for (const u of [-Lu, Lu]) board(P(u, -Sv, eaveY), P(u, Sv, eaveY), end(u));
+    }
+  }
+
+  /** A window high up in each gable end of a pitched house roof (the attic room). */
+  addGableWindows(box: OBB, spec: RoofSpec, top: number) {
+    if (spec.type !== 'gabled') return;
+    const rise = (box.short / 2) * Math.tan(spec.pitch * Math.PI / 180);
+    if (rise < 2.2 || box.short < 6) return;
+    const c = Math.cos(box.angle), s = Math.sin(box.angle);
+    for (const sgn of [-1, 1]) {
+      const u = sgn * (box.long / 2), nx = c * sgn, ny = s * sgn;
+      const x = box.cx + u * c, y = box.cy + u * s, h = top + Math.min(rise * 0.38, 1.6) + 0.65;
+      const q = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.atan2(nx, -ny));
+      this.frames.push(new THREE.Matrix4().compose(new THREE.Vector3(x + nx * 0.04, h, -(y + ny * 0.04)), q, new THREE.Vector3(1, 1, 1)));
+      this.glass.push(new THREE.Matrix4().compose(new THREE.Vector3(x + nx * 0.07, h, -(y + ny * 0.07)), q, new THREE.Vector3(1, 1, 1)));
+    }
+  }
+
   finish() {
     const add = (geo: THREE.BufferGeometry, mat: THREE.Material, list: THREE.Matrix4[], shadow = false) => {
       if (!list.length) return;
@@ -137,8 +204,13 @@ export class HouseDetails {
       m.castShadow = shadow; m.receiveShadow = true;
       this.group.add(m);
     };
-    add(new THREE.BoxGeometry(1.15, 1.3, 0.08), new THREE.MeshStandardMaterial({ color: '#f1efe8', roughness: 0.6 }), this.frames);
-    add(new THREE.BoxGeometry(0.95, 1.1, 0.04), new THREE.MeshStandardMaterial({ color: '#2b3a46', roughness: 0.08, metalness: 0.1, envMapIntensity: 3 }), this.glass);
+    const white = new THREE.MeshStandardMaterial({ color: '#f3f1ea', roughness: 0.6 });
+    add(new THREE.BoxGeometry(1.25, 1.45, 0.08), white, this.frames);
+    add(new THREE.BoxGeometry(1.03, 1.23, 0.04), new THREE.MeshStandardMaterial({ color: '#2b3a46', roughness: 0.08, metalness: 0.1, envMapIntensity: 3 }), this.glass);
+    // glazing bars: a vertical bar and one across the upper third, so windows read as Swedish two-pane windows
+    add(mergeGeometries([new THREE.BoxGeometry(0.07, 1.23, 0.05), new THREE.BoxGeometry(1.03, 0.06, 0.05).translate(0, 0.2, 0)])!.translate(0, 0, 0.03), white, this.glass);
+    add(new THREE.BoxGeometry(0.2, 1, 0.2), white, this.corners);
+    add(new THREE.BoxGeometry(1, 0.24, 0.07), white, this.trim, true);
     add(new THREE.BoxGeometry(1.0, 2.1, 0.1), new THREE.MeshStandardMaterial({ color: '#5b3b2a', roughness: 0.7 }), this.doors);
     add(new THREE.BoxGeometry(0.55, 1.6, 0.55).translate(0, 0.8, 0), new THREE.MeshStandardMaterial({ color: '#7a3e30', roughness: 0.85 }), this.chimneys, true);
   }

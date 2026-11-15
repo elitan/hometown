@@ -55,7 +55,7 @@ export class Post {
 
     this.ao = new GTAOPass(scene, camera, w, h);
     this.ao.blendIntensity = 1;
-    this.ao.updateGtaoMaterial({ radius: 2.5, distanceExponent: 1.6, thickness: 1.5, scale: 1, samples: 12, distanceFallOff: 1 });
+    this.ao.updateGtaoMaterial({ radius: 4, distanceExponent: 1.4, thickness: 3, scale: 1.5, samples: 16, distanceFallOff: 1 });
     this.ao.updatePdMaterial({ lumaPhi: 10, depthPhi: 2, normalPhi: 3, radius: 5, rings: 2, samples: 12 });
     // AO is soft by nature: render it at half resolution (its cost was ~30% of the frame)
     const aoSetSize = this.ao.setSize.bind(this.ao);

@@ -11,7 +11,8 @@ import { Post, fitShadow, groundMaterial, installSky } from './look';
 import { Water } from './water';
 import { Forest, type TreeSpec } from './forest';
 import { Props } from './props';
-import { HouseDetails, roofTexture, roofUVs, wallTexture } from './houses';
+import { HouseDetails, PLINTH, roofTexture, roofUVs, wallTexture } from './houses';
+import { cleanPhoto } from './photo';
 import { bridgeGeometry, isBridge, isTunnel, makeDeckAt, type Bridge } from './bridges';
 import {
   FIELDS, GROUND, LAND, LAND_ORDER, PLACE_KINDS, ROAD, ROOFS, UNPAVED, WALLS, WATER, buildingHeight, pretty, type MapStyle,
@@ -321,7 +322,7 @@ export class MapEngine {
     const H = this.H = elev ? (x: number, y: number) => (elev.at(...P.unproj(x, y)) - base) * exag : () => 0;
     this.R = R;
 
-    const { tex, forests, sample, roofTints } = this.drawMapTexture(P, data, R, style, img);
+    const { tex, forests, sample, roofTints } = this.drawMapTexture(P, data, R, style, img, laser);
     const g = new THREE.PlaneGeometry(2 * R, 2 * R, seg, seg).rotateX(-Math.PI / 2);
     const pos = g.attributes.position;
     let minY = Infinity;
@@ -333,7 +334,7 @@ export class MapEngine {
     world.add(this.skirt(H, R, seg, minY - 30));
 
     // buildings (sunk below the lowest footprint point), named things, places
-    const wallGeos: THREE.BufferGeometry[] = [], roofGeos: THREE.BufferGeometry[] = [], details = new HouseDetails(), treePts: XY[] = [], places: { name: string; xy: XY }[] = [];
+    const wallGeos: THREE.BufferGeometry[] = [], plinthGeos: THREE.BufferGeometry[] = [], roofGeos: THREE.BufferGeometry[] = [], details = new HouseDetails(), treePts: XY[] = [], places: { name: string; xy: XY }[] = [];
     const named: typeof this.named = { buildings: [], roads: [], areas: [] };
     let buildingCount = 0, roofsMeasured = 0;
     const heightAt = surface ? (x: number, y: number) => surface.at(...P.unproj(x, y)) : null;
@@ -400,6 +401,13 @@ export class MapEngine {
               : /garage|garages|shed|carport|greenhouse|roof|hut/.test(b) ? 'shed'
               : /apartments|industrial|commercial|retail|office|school|warehouse|hospital|public/.test(b) || lv >= 3 ? 'big' : 'house';
             if (!/turning torso/i.test(t.name ?? '')) details.addWalls(p, hi, hi + walls, kind, el.id); // straight windows don't fit a twisted tower
+            if ((kind === 'house' || kind === 'barn') && spec.type !== 'flat') details.addRoofTrim(box, spec, hi + walls);
+            if (kind === 'house') details.addGableWindows(box, spec, hi + walls);
+            // a stone plinth the walls stand on, a few centimetres proud of the wall face
+            const plinth = new THREE.ExtrudeGeometry(shape(p), { depth: hi + PLINTH - lo, bevelEnabled: false });
+            const grow = 1 + 0.06 / Math.max(1.5, box.short / 2);
+            plinth.rotateX(-Math.PI / 2).translate(-cx, lo, cy).scale(grow, 1, grow).translate(cx, 0, -cy);
+            plinthGeos.push(plinth);
             if (kind === 'house' && spec.type !== 'flat' && el.id % 10 < 7) details.addChimney(box, hi + walls + (box.short / 2) * Math.tan(spec.pitch * Math.PI / 180), el.id);
             buildingCount++;
           } catch { /* degenerate footprint */ }
@@ -444,6 +452,12 @@ export class MapEngine {
     };
     addBuildingMesh(wallGeos, wallTexture(), 0.85);
     addBuildingMesh(roofGeos, roofTexture(), 0.75);
+    if (plinthGeos.length) {
+      const m = new THREE.Mesh(mergeGeometries(plinthGeos.map(g => { g.deleteAttribute('uv'); return g; })), new THREE.MeshStandardMaterial({ color: '#77736c', roughness: 0.95 }));
+      m.castShadow = m.receiveShadow = true;
+      world.add(m);
+      plinthGeos.forEach(g => g.dispose());
+    }
     details.finish();
     world.add(details.group);
 
@@ -621,7 +635,7 @@ export class MapEngine {
 
   // ---------- map texture (2D layers draped over terrain) ----------
 
-  private drawMapTexture(P: LocalProjection, data: OsmData, R: number, style: MapStyle, img: Imagery | null) {
+  private drawMapTexture(P: LocalProjection, data: OsmData, R: number, style: MapStyle, img: Imagery | null, laser: LaserTrees | null) {
     const S = Math.min(4096, this.renderer.capabilities.maxTextureSize);
     const cv = document.createElement('canvas'); cv.width = cv.height = S;
     const ctx = cv.getContext('2d')!;
@@ -676,6 +690,9 @@ export class MapEngine {
       sample = this.makeSampler(cv, R);
       // one smooth colour per roof: the median of its interior photo pixels, ignoring vegetation
       for (const p of footprints) { const c = roofColor(p, sample); if (c) roofTints.set(p, c); }
+      // the 3D houses and trees stand on the photo: paint out the photo's own flat roofs, crowns and their shadows
+      const crowns = laser ? laser.trees.map(([lon, lat, h, r]) => { const [x, y] = P.proj(lat, lon); return { x, y, h, r }; }) : [];
+      cleanPhoto(cv, R, footprints, crowns);
     } else {
       ctx.fillStyle = GROUND; ctx.fillRect(0, 0, S, S);
       for (let i = 0; i < S * S / 60; i++) { // subtle grass grain
