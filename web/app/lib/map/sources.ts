@@ -1,6 +1,6 @@
 // Data sources: geocoding, OSM features, elevation (Lantmäteriet 1 m or global 30 m), aerial imagery.
 import type { LatLon, OsmData, OsmElement } from './geo';
-import { call } from '../../rpc';
+import { call } from 'northstack';
 
 export type BBox = { s: number; w: number; n: number; e: number };
 /** Elevation sampler in meters above sea level. */

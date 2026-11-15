@@ -75,7 +75,7 @@ just check    # migrate, regenerate types, compile, typecheck, reload the api
 just verify   # + format, clippy, tests and the frontend build
 ```
 
-Then open http://localhost:5173. Built on [northstack](https://github.com/elitan/northstack); see [CLAUDE.md](CLAUDE.md) for how the code is organised.
+Then open http://localhost:5173. Built on [northstack](https://github.com/elitan/northstack); see [AGENTS.md](AGENTS.md) for how the code is organised.
 
 ### Turn on Sweden HD (optional, free)
 
@@ -114,14 +114,14 @@ place name ─► Nominatim ─► OpenStreetMap ─► buildings, roads, water,
 
 | Part | Where |
 | --- | --- |
-| Data sources | `web/src/lib/map/sources.ts` |
-| Scene, terrain, buildings, labels, camera | `web/src/lib/map/engine.ts` |
-| Lighting and post-processing | `web/src/lib/map/look.ts` |
+| Data sources | `web/app/lib/map/sources.ts` |
+| Scene, terrain, buildings, labels, camera | `web/app/lib/map/engine.ts` |
+| Lighting and post-processing | `web/app/lib/map/look.ts` |
 | Trees · houses · roofs · water | `forest.ts` · `houses.ts` · `roofs.ts` · `water.ts` |
 | Bridges · railway and trains · road traffic | `bridges.ts` · `rail.ts` · `traffic.ts` |
 | Street furniture | `props.ts` |
-| Laser processing (server, Rust) | `app/src/features/lm/laser.rs` |
-| 1 m terrain (server, Rust) | `app/src/features/lm/dtm.rs` |
+| Laser processing (server, Rust) | `server/src/features/lm/laser.rs` |
+| 1 m terrain (server, Rust) | `server/src/features/lm/dtm.rs` |
 
 The server is Rust ([northstack](https://github.com/elitan/northstack): axum, sqlx, Postgres) and reads
 Lantmäteriet's Cloud Optimized GeoTIFFs and COPC point clouds directly, downloading only the parts under

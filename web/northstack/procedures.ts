@@ -7,7 +7,3 @@ export type Procedures = {
   "lm.status": { kind: "query"; input: null; output: LmStatus };
   "lm.trees": { kind: "query"; input: AreaInput; output: TreesResult };
 };
-
-/** Dotted prefixes of procedure names, for invalidation. */
-export type Namespace =
-  | "lm";
