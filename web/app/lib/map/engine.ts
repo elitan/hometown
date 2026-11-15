@@ -7,7 +7,9 @@ import type { Elevation, Imagery, LaserTrees, Surface } from './sources';
 import { measureRoof, obb, polyArea, roofGeometry, roofSpec } from './roofs';
 import { Traffic, type Car, type RoadWay } from './traffic';
 import { Railway, type RailWay, type Train } from './rail';
-import { Post, fitShadow, groundMaterial, installSky } from './look';
+import { Post, SkyDome, fitShadow, groundMaterial, skyDirection } from './look';
+import { seasonalGround, seasonalRoof, setSeason } from './season';
+import { instant, sunPosition, type Season } from './sun';
 import { Water } from './water';
 import { Forest, type TreeSpec } from './forest';
 import { Props } from './props';
@@ -152,7 +154,7 @@ export class MapEngine {
 
     // haze toward the horizon, matched to the sky colour near the horizon
     this.scene.fog = new THREE.Fog(0xc4d3de, 2600, 6500);
-    installSky(r, this.scene);
+    this.sky = new SkyDome(r, this.scene);
     this.camera = new THREE.PerspectiveCamera(45, dom.container.clientWidth / dom.container.clientHeight, 1, 14000);
     this.camera.position.set(0, 2000, 600);
     const c = this.controls = new MapControls(this.camera, r.domElement);
@@ -164,9 +166,7 @@ export class MapEngine {
     c.rotateSpeed = 0.6;
     c.addEventListener('start', () => { this.fly = null; this.stopFollow(); this.onUserInteract?.(); });
 
-    this.scene.add(new THREE.HemisphereLight(0xdfeaf5, 0x6b7a52, 0.35)); // sky light mostly comes from the environment map
-    this.sun.color.set(0xfff0dc);
-    this.sun.intensity = 3.4;
+    this.scene.add(this.hemi); // sky light mostly comes from the environment map
     this.sun.castShadow = true;
     this.sun.shadow.mapSize.set(4096, 4096);
     this.sun.shadow.bias = -0.0002;
@@ -185,9 +185,54 @@ export class MapEngine {
     addEventListener('blur', this.onBlur);
     r.domElement.addEventListener('pointerleave', this.hideTip);
     this.post = new Post(r, this.scene, this.camera, dom.container.clientWidth, dom.container.clientHeight);
+    this.applyLight();
     r.setAnimationLoop(this.tick);
   }
   private post: Post;
+  private sky: SkyDome;
+  private hemi = new THREE.HemisphereLight(0xdfeaf5, 0x6b7a52, 0.35);
+  private lightDir = new THREE.Vector3(0, 1, 0);
+  private place: [number, number] = [56, 14];
+  private time: { season: Season; hour: number } = { season: 'summer', hour: 15 };
+  private lightDirty = false;
+  private lastSky = new THREE.Vector3(9, 9, 9);
+
+  /** Season and local clock time (0–24). Cheap: lighting updates on the next frame, nothing is rebuilt. */
+  setTime(season: Season, hour: number) {
+    if (season !== this.time.season) { setSeason(season); this.water?.setIce(season === 'winter'); this.forest?.setBare(season === 'winter'); }
+    this.time = { season, hour };
+    this.lightDirty = true;
+  }
+
+  /** Sun or moon, sky, ambient light, exposure and haze for the current place, season and hour. */
+  private applyLight() {
+    this.lightDirty = false;
+    const [lat, lon] = this.place;
+    const { elevation: e, azimuth: az } = sunPosition(lat, lon, instant(lat, lon, this.time.season, this.time.hour));
+    const ss = THREE.MathUtils.smoothstep;
+    const day = ss(e, -6, 10), night = 1 - ss(e, -12, -2);
+    const sunI = 3.4 * ss(e, -4, 8), moonI = 0.7 * (1 - ss(e, -8, -3));
+    if (sunI >= moonI) {
+      // keep the light a few degrees up: a sun on the horizon would cast shadows across the whole map
+      this.lightDir.copy(skyDirection(Math.max(e, 8), az));
+      this.sun.intensity = sunI;
+      this.sun.color.set(0xffa860).lerp(new THREE.Color(0xfff0dc), ss(e, 2, 28));
+    } else {
+      this.lightDir.copy(skyDirection(38, (az + 180) % 360)); // moonlight, roughly opposite the sun
+      this.sun.intensity = moonI;
+      this.sun.color.set(0x8fa6d8);
+    }
+    this.hemi.intensity = 0.16 + 0.19 * day;
+    this.hemi.color.set(0x3a4a70).lerp(new THREE.Color(0xdfeaf5), day);
+    this.hemi.groundColor.set(0x1a1f2a).lerp(new THREE.Color(0x6b7a52), day);
+    this.renderer.toneMappingExposure = 0.75 + 0.55 * (1 - ss(e, -6, 10)); // eyes adapt at dusk and night
+    // low sun: the bright, warm sky does more of the lighting
+    this.scene.environmentIntensity = 0.18 + 0.3 * ss(e, -6, 0) * (1 - ss(e, 4, 20));
+    const fog = (this.scene.fog as THREE.Fog).color;
+    fog.set(0xc4d3de).lerp(new THREE.Color(0xd8ad8a), (1 - ss(e, 2, 14)) * day).lerp(new THREE.Color(0x141c2c), night);
+    const skyDir = skyDirection(e, az);
+    if (skyDir.distanceTo(this.lastSky) > 0.004) { this.sky.update(skyDir, 1 - ss(e, -6, 4), 1 - ss(e, -14, -4)); this.lastSky.copy(skyDir); }
+  }
 
   dispose() {
     this.disposed = true;
@@ -199,6 +244,7 @@ export class MapEngine {
     this.clearWorld();
     this.controls.dispose();
     this.post.dispose();
+    this.sky.dispose();
     this.renderer.dispose();
     this.renderer.domElement.remove();
     this.dom.labels.innerHTML = '';
@@ -232,7 +278,8 @@ export class MapEngine {
     }
     if (!this.follow) this.controls.update();
     const center = this.follow ? this.followLook : this.controls.target;
-    fitShadow(this.sun, center, this.camera.position.distanceTo(center), this.R * 1.35);
+    if (this.lightDirty) this.applyLight();
+    fitShadow(this.sun, this.lightDir, center, this.camera.position.distanceTo(center), this.R * 1.35);
     if ((this.frameNo++ & 1) === 0) this.renderer.shadowMap.needsUpdate = true;
     this.post.render();
     this.updateLabels();
@@ -321,14 +368,18 @@ export class MapEngine {
     }
     const H = this.H = elev ? (x: number, y: number) => (elev.at(...P.unproj(x, y)) - base) * exag : () => 0;
     this.R = R;
+    this.place = P.unproj(0, 0) as [number, number];
+    this.lightDirty = true;
 
-    const { tex, forests, sample, roofTints } = this.drawMapTexture(P, data, R, style, img, laser);
+    const { tex, roadMask, forests, sample, roofTints } = this.drawMapTexture(P, data, R, style, img, laser);
     const g = new THREE.PlaneGeometry(2 * R, 2 * R, seg, seg).rotateX(-Math.PI / 2);
     const pos = g.attributes.position;
     let minY = Infinity;
     for (let i = 0; i < pos.count; i++) { const y = H(pos.getX(i), -pos.getZ(i)); pos.setY(i, y); minY = Math.min(minY, y); }
     g.computeVertexNormals();
-    const ground = new THREE.Mesh(g, groundMaterial(tex, R));
+    const groundMat = groundMaterial(tex, R);
+    seasonalGround(groundMat, roadMask);
+    const ground = new THREE.Mesh(g, groundMat);
     ground.receiveShadow = true;
     world.add(ground);
     world.add(this.skirt(H, R, seg, minY - 30));
@@ -444,14 +495,16 @@ export class MapEngine {
       }
     }
     this.named = named;
-    const addBuildingMesh = (geos: THREE.BufferGeometry[], map: THREE.Texture, roughness: number) => {
+    const addBuildingMesh = (geos: THREE.BufferGeometry[], map: THREE.Texture, roughness: number, roof = false) => {
       if (!geos.length) return;
-      const m = new THREE.Mesh(mergeGeometries(geos), new THREE.MeshStandardMaterial({ vertexColors: true, map, roughness }));
+      const mat = new THREE.MeshStandardMaterial({ vertexColors: true, map, roughness });
+      if (roof) seasonalRoof(mat);
+      const m = new THREE.Mesh(mergeGeometries(geos), mat);
       m.castShadow = m.receiveShadow = true;
       world.add(m);
     };
     addBuildingMesh(wallGeos, wallTexture(), 0.85);
-    addBuildingMesh(roofGeos, roofTexture(), 0.75);
+    addBuildingMesh(roofGeos, roofTexture(), 0.75, true);
     if (plinthGeos.length) {
       const m = new THREE.Mesh(mergeGeometries(plinthGeos.map(g => { g.deleteAttribute('uv'); return g; })), new THREE.MeshStandardMaterial({ color: '#77736c', roughness: 0.95 }));
       m.castShadow = m.receiveShadow = true;
@@ -476,7 +529,7 @@ export class MapEngine {
     // lakes with real water surfaces
     // the sea: if the area reaches down to sea level, put a sea surface at 0 m (0.3 m up to hide shore noise)
     const sea = elev && base < 1.5 ? { y: (0.3 - base) * exag, R } : null;
-    if (lakes.length || sea) { this.water = new Water(lakes, H, sea); world.add(this.water.group); }
+    if (lakes.length || sea) { this.water = new Water(lakes, H, sea); this.water.setIce(this.time.season === 'winter'); world.add(this.water.group); }
 
     // railway track + trains
     if (railWays.length) {
@@ -532,6 +585,7 @@ export class MapEngine {
     if (!ctx) return;
     this.forest?.dispose();
     this.forest = new Forest(trees, ctx.H, ctx.sample);
+    this.forest.setBare(this.time.season === 'winter');
     ctx.world.add(this.forest.group);
     this.forest.update(this.camera.position, performance.now() + 1e6);
   }
@@ -740,7 +794,20 @@ export class MapEngine {
     const tex = new THREE.CanvasTexture(cv);
     tex.colorSpace = THREE.SRGBColorSpace;
     tex.anisotropy = this.renderer.capabilities.getMaxAnisotropy();
-    return { tex, forests, sample, roofTints };
+
+    // paved roads, for keeping them ploughed when the ground is under snow
+    const MS = 2048, mc = document.createElement('canvas'); mc.width = mc.height = MS;
+    const mctx = mc.getContext('2d')!, mk = MS / (2 * R);
+    mctx.fillStyle = '#000'; mctx.fillRect(0, 0, MS, MS);
+    mctx.strokeStyle = '#fff'; mctx.lineCap = mctx.lineJoin = 'round';
+    for (const r of roads) {
+      if (!r.paved) continue;
+      mctx.beginPath();
+      r.pts.forEach(([x, y], i) => { const a = (x + R) * mk, b = (R - y) * mk; if (i) mctx.lineTo(a, b); else mctx.moveTo(a, b); });
+      mctx.lineWidth = Math.max(1, r.w * mk); mctx.stroke();
+    }
+    const roadMask = new THREE.CanvasTexture(mc);
+    return { tex, roadMask, forests, sample, roofTints };
   }
 
   /** Low-res copy of the photo texture for sampling roof and tree colors. */

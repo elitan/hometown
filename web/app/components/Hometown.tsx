@@ -8,6 +8,8 @@ import { Segmented } from './Segmented';
 import { Loader, type StepKey, type StepState } from './Loader';
 import { PlaceCard, type Chip } from './PlaceCard';
 import { NavControls } from './NavControls';
+import { TimeControls } from './TimeControls';
+import { SEASONS, now, type Season } from '../lib/map/sun';
 
 type Loaded = { P: LocalProjection; data: OsmData; elev: Elevation | null; img: Imagery | null; laser: LaserTrees | null; surface: Surface | null; R: number; name: string };
 
@@ -46,6 +48,14 @@ export default function Hometown() {
   const [traffic, setTraffic] = useState(true);
   const [dataMode, setDataMode] = useState<'hd' | 'open'>('hd');
   const [follow, setFollow] = useState<{ name: string; kmh: number } | null>(null);
+  // season and clock: from the link (?season=winter&time=14.5) or "now" at the place; chosen = the user picked them
+  const [time, setTimeState] = useState<{ season: Season; hour: number; chosen: boolean }>(() => {
+    const q = new URLSearchParams(location.search), s = q.get('season') as Season | null, h = parseFloat(q.get('time') ?? '');
+    return s && SEASONS.includes(s) ? { season: s, hour: Number.isFinite(h) ? h % 24 : 14, chosen: true } : { season: 'summer', hour: 14, chosen: false };
+  });
+  const [playing, setPlaying] = useState(false);
+  const timeRef = useRef(time);
+  timeRef.current = time;
 
   const setStep = (k: StepKey, s: StepState) => setSteps(prev => ({ ...prev, [k]: s }));
 
@@ -89,6 +99,7 @@ export default function Hometown() {
       const [lat, lon, name] = await geocode(q);
       setStep('geo', 'done');
       const P = new LocalProjection(lat, lon), b = P.bbox(R);
+      if (!timeRef.current.chosen) setTimeState({ ...now(lat, lon), chosen: false });
       stage = 'osm';
       setSteps(s => ({ ...s, osm: 'active', dem: 'active', img: 'active' }));
       const t0 = performance.now();
@@ -162,6 +173,23 @@ export default function Hometown() {
     return () => { eng.dispose(); engineRef.current = null; };
   }, [load, hideHint]);
 
+  // lighting follows the season and clock; the link remembers a chosen time (not while playing)
+  useEffect(() => { engineRef.current?.setTime(time.season, time.hour); }, [time]);
+  useEffect(() => {
+    if (playing) return;
+    const url = new URL(location.href);
+    if (time.chosen) { url.searchParams.set('season', time.season); url.searchParams.set('time', String(Math.round(time.hour * 100) / 100)); }
+    else { url.searchParams.delete('season'); url.searchParams.delete('time'); }
+    history.replaceState(null, '', url);
+  }, [time, playing]);
+  const setHour = useCallback((hour: number) => setTimeState(t => ({ ...t, hour, chosen: true })), []);
+  const setNow = () => {
+    setPlaying(false);
+    const P = loadedRef.current?.P;
+    const [lat, lon] = P ? P.unproj(0, 0) : [56, 14];
+    setTimeState({ ...now(lat, lon), chosen: false });
+  };
+
   const toggleTraffic = () => { const on = !traffic; setTraffic(on); engineRef.current?.setTraffic(on); };
 
   const saveImage = () => {
@@ -204,6 +232,11 @@ export default function Hometown() {
               load(place, radius, { hills, style }, true); // same place, same camera: easy to compare
             }} />
           </div>
+          <TimeControls
+            season={time.season} hour={time.hour} playing={playing}
+            onSeason={season => setTimeState(t => ({ ...t, season, chosen: true }))}
+            onHour={setHour} onPlay={setPlaying} onNow={setNow}
+          />
           <div className="setting">
             <label>Area</label>
             <Segmented options={RADII} value={radius} onChange={v => { setRadius(v); load(place, v, { hills, style }); }} />

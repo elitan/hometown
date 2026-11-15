@@ -7,38 +7,89 @@ import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
 import { GTAOPass } from 'three/examples/jsm/postprocessing/GTAOPass.js';
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 
-/** Afternoon sun from the south-west, a little hazy — flattering for low-poly villages and forests. */
-export const SUN = { elevation: 33, azimuth: 215 };
-
-export function sunDirection() {
-  return new THREE.Vector3().setFromSphericalCoords(1, THREE.MathUtils.degToRad(90 - SUN.elevation), THREE.MathUtils.degToRad(SUN.azimuth));
+/** Direction toward the sun (or moon) for an elevation and an azimuth clockwise from north, in degrees. */
+export function skyDirection(elevation: number, azimuth: number) {
+  // world: x = east, z = south (-north); spherical theta is measured from +z toward +x
+  return new THREE.Vector3().setFromSphericalCoords(1, THREE.MathUtils.degToRad(90 - elevation), THREE.MathUtils.degToRad(180 - azimuth));
 }
 
-/** Render the physical sky into a cube map once: used as background and (pre-filtered) as environment light. */
-export function installSky(renderer: THREE.WebGLRenderer, scene: THREE.Scene) {
-  const sky = new Sky();
-  sky.scale.setScalar(10000);
-  const u = sky.material.uniforms;
-  u.turbidity.value = 2.6;
-  u.rayleigh.value = 1.4;
-  u.mieCoefficient.value = 0.0028;
-  u.mieDirectionalG.value = 0.82;
-  u.sunPosition.value.copy(sunDirection());
+/**
+ * The physical sky, rendered into a cube map that is both the background and (pre-filtered) the environment
+ * light. Re-rendered when the sun moves; at night a dark blue dome and stars fade in over it.
+ */
+export class SkyDome {
+  private sky = new Sky();
+  private skyScene = new THREE.Scene();
+  private cube = new THREE.WebGLCubeRenderTarget(512, { type: THREE.HalfFloatType, generateMipmaps: true, minFilter: THREE.LinearMipmapLinearFilter });
+  private cubeCamera = new THREE.CubeCamera(1, 20000, this.cube);
+  private pmrem: THREE.PMREMGenerator;
+  private env: THREE.WebGLRenderTarget | null = null;
+  private nightSky: THREE.ShaderMaterial;
+  private stars: THREE.PointsMaterial;
 
-  const skyScene = new THREE.Scene();
-  skyScene.add(sky);
-  const cube = new THREE.WebGLCubeRenderTarget(512, { type: THREE.HalfFloatType, generateMipmaps: true, minFilter: THREE.LinearMipmapLinearFilter });
-  const planes = renderer.clippingPlanes;
-  renderer.clippingPlanes = []; // the map's clipping box must not cut the sky
-  new THREE.CubeCamera(1, 20000, cube).update(renderer, skyScene);
-  const pmrem = new THREE.PMREMGenerator(renderer);
-  const env = pmrem.fromCubemap(cube.texture).texture;
-  pmrem.dispose();
-  renderer.clippingPlanes = planes;
+  constructor(private renderer: THREE.WebGLRenderer, private scene: THREE.Scene) {
+    this.sky.scale.setScalar(10000);
+    const u = this.sky.material.uniforms;
+    u.turbidity.value = 2.6;
+    u.rayleigh.value = 1.4;
+    u.mieCoefficient.value = 0.0028;
+    u.mieDirectionalG.value = 0.82;
+    this.skyScene.add(this.sky);
 
-  scene.background = cube.texture;
-  scene.environment = env;
-  scene.environmentIntensity = 0.18; // the physical sky is very bright; this keeps sky light a fill, not a floodlight
+    this.nightSky = new THREE.ShaderMaterial({
+      uniforms: { uNight: { value: 0 }, uDeep: { value: 0 } },
+      vertexShader: 'varying vec3 vDir; void main() { vDir = normalize(position); gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
+      // twilight blue right after sunset, deepening to a dark night sky (linear colours, before exposure)
+      fragmentShader: `uniform float uNight; uniform float uDeep; varying vec3 vDir;
+        void main() {
+          float h = pow(clamp(vDir.y, 0.0, 1.0), 0.5);
+          vec3 dusk = mix(vec3(0.16, 0.2, 0.36), vec3(0.05, 0.09, 0.22), h);
+          vec3 deep = mix(vec3(0.016, 0.024, 0.05), vec3(0.003, 0.005, 0.013), h);
+          // near the horizon the sunset glow shows through at dusk
+          float a = uNight * mix(1.0 - 0.55 * (1.0 - h) * (1.0 - uDeep), 1.0, uDeep);
+          gl_FragColor = vec4(mix(dusk, deep, uDeep), a);
+        }`,
+      side: THREE.BackSide, transparent: true, depthTest: false, depthWrite: false,
+    });
+    const dome = new THREE.Mesh(new THREE.SphereGeometry(5000, 32, 16), this.nightSky);
+    dome.renderOrder = 1;
+    this.skyScene.add(dome);
+
+    const pts: number[] = [];
+    for (let i = 0; i < 1800; i++) {
+      const v = new THREE.Vector3(Math.random() * 2 - 1, Math.random(), Math.random() * 2 - 1).normalize().multiplyScalar(4500);
+      if (v.y > 150) pts.push(v.x, v.y, v.z);
+    }
+    const g = new THREE.BufferGeometry().setAttribute('position', new THREE.Float32BufferAttribute(pts, 3));
+    this.stars = new THREE.PointsMaterial({ color: 0xffffff, size: 2.5, sizeAttenuation: false, transparent: true, opacity: 0, depthTest: false, depthWrite: false });
+    const stars = new THREE.Points(g, this.stars);
+    stars.renderOrder = 2;
+    this.skyScene.add(stars);
+
+    this.pmrem = new THREE.PMREMGenerator(renderer);
+    scene.background = this.cube.texture;
+    scene.environmentIntensity = 0.18; // the physical sky is very bright; this keeps sky light a fill, not a floodlight
+  }
+
+  /** Re-render for a sun direction; `dusk` (0..1) fades in the twilight sky, `deep` (0..1) darkens it to night. */
+  update(sun: THREE.Vector3, dusk: number, deep: number) {
+    this.sky.material.uniforms.sunPosition.value.copy(sun);
+    this.nightSky.uniforms.uNight.value = dusk;
+    this.nightSky.uniforms.uDeep.value = deep;
+    this.stars.opacity = deep;
+    const planes = this.renderer.clippingPlanes;
+    this.renderer.clippingPlanes = []; // the map's clipping box must not cut the sky
+    this.cubeCamera.update(this.renderer, this.skyScene);
+    this.renderer.clippingPlanes = planes;
+    const env = this.pmrem.fromCubemap(this.cube.texture);
+    this.env?.dispose();
+    this.env = env;
+    this.scene.environment = env.texture;
+  }
+
+  dispose() {
+    this.env?.dispose(); this.cube.dispose(); this.pmrem.dispose();
+  }
 }
 
 export class Post {
@@ -76,11 +127,10 @@ export class Post {
  * Keep the sun's shadow box centred on the view and sized to the camera distance, snapped to shadow texels
  * so it doesn't shimmer while panning. Returns nothing; mutates the light.
  */
-export function fitShadow(sun: THREE.DirectionalLight, center: THREE.Vector3, camDist: number, maxExtent: number) {
+export function fitShadow(sun: THREE.DirectionalLight, dir: THREE.Vector3, center: THREE.Vector3, camDist: number, maxExtent: number) {
   const ext = THREE.MathUtils.clamp(camDist * 0.9, 45, maxExtent);
   const texel = (2 * ext) / sun.shadow.mapSize.x;
   const c = new THREE.Vector3(Math.round(center.x / texel) * texel, center.y, Math.round(center.z / texel) * texel);
-  const dir = sunDirection();
   const back = ext * 2 + 300;
   sun.position.copy(c).addScaledVector(dir, back);
   sun.target.position.copy(c);

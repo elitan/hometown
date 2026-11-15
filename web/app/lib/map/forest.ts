@@ -3,6 +3,7 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { rand } from './geo';
+import { seasonalFoliage } from './season';
 
 /** One tree: local position (x east, y north), height and crown radius in meters. */
 export type TreeSpec = { x: number; y: number; h: number; r: number };
@@ -157,6 +158,8 @@ export class Forest {
   private mats = [material(leafTexture('needle')), material(leafTexture('leaf')), material()];
 
   constructor(trees: TreeSpec[], H: Height, sample: Sample | null) {
+    seasonalFoliage(this.mats[0], 'needle');
+    seasonalFoliage(this.mats[1], 'leaf');
     // spruce vs broadleaf from the aerial photo: spruce canopies read darker from above
     const photo = trees.map(t => sample?.(t.x, t.y, 1) ?? null);
     const light = photo.map(c => c ? c.getHSL({ h: 0, s: 0, l: 0 }).l : NaN);
@@ -192,6 +195,11 @@ export class Forest {
     }
     // trunks only matter up close; a few birches among the broadleaves
     this.trunks.push(this.make(trunk(false), this.items.length, this.mats[2]), this.make(trunk(true), this.items.length, this.mats[2]));
+  }
+
+  /** Winter: leafless broadleaf crowns are mostly air, so they stop casting solid shadows. */
+  setBare(bare: boolean) {
+    for (const m of [...this.near[1], this.far[1]]) m.castShadow = !bare;
   }
 
   private make(geo: THREE.BufferGeometry, n: number, mat: THREE.Material) {

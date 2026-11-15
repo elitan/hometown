@@ -31,23 +31,14 @@ export class Water {
   private normals = rippleNormals();
   private offset2 = { value: new THREE.Vector2() };
   private material: THREE.MeshStandardMaterial;
+  private lakeMaterial: THREE.MeshStandardMaterial;
   private t = 0;
 
   /** `sea`: also lay a sea surface at this scene height (coastal places), under everything else. */
   constructor(lakes: Poly[], H: Height, sea: { y: number; R: number } | null = null) {
     this.normals.repeat.set(1 / 24, 1 / 24);
-    this.material = new THREE.MeshStandardMaterial({
-      color: '#1f3b4a', roughness: 0.06, metalness: 0, envMapIntensity: 4.5,
-      normalMap: this.normals, normalScale: new THREE.Vector2(0.35, 0.35),
-    });
-    // second, finer ripple layer moving the other way, mixed into the normal-map lookup
-    this.material.onBeforeCompile = sh => {
-      sh.uniforms.offset2 = this.offset2;
-      sh.fragmentShader = sh.fragmentShader
-        .replace('#include <normalmap_pars_fragment>', '#include <normalmap_pars_fragment>\nuniform vec2 offset2;')
-        .replace('vec3 mapN = texture2D( normalMap, vNormalMapUv ).xyz * 2.0 - 1.0;',
-          'vec3 mapN = normalize( texture2D( normalMap, vNormalMapUv ).xyz * 2.0 - 1.0 + ( texture2D( normalMap, vNormalMapUv * 2.7 + offset2 ).xyz * 2.0 - 1.0 ) * vec3( 0.8, 0.8, 0.0 ) );');
-    };
+    this.material = this.makeMaterial();
+    this.lakeMaterial = this.makeMaterial(); // lakes freeze in winter, the sea doesn't
 
     if (sea) {
       const g = new THREE.PlaneGeometry(sea.R * 2, sea.R * 2).rotateX(-Math.PI / 2).translate(0, sea.y, 0);
@@ -67,10 +58,35 @@ export class Water {
       const shape = new THREE.Shape(p.outer.map(([x, y]) => new THREE.Vector2(x, y)));
       for (const h of p.holes) shape.holes.push(new THREE.Path(h.map(([x, y]) => new THREE.Vector2(x, y))));
       const g = new THREE.ShapeGeometry(shape).rotateX(-Math.PI / 2).translate(0, level + 0.12, 0);
-      const m = new THREE.Mesh(g, this.material);
+      const m = new THREE.Mesh(g, this.lakeMaterial);
       m.receiveShadow = true;
       this.group.add(m);
     }
+  }
+
+  private makeMaterial() {
+    const mat = new THREE.MeshStandardMaterial({
+      color: '#1f3b4a', roughness: 0.06, metalness: 0, envMapIntensity: 4.5,
+      normalMap: this.normals, normalScale: new THREE.Vector2(0.35, 0.35),
+    });
+    // second, finer ripple layer moving the other way, mixed into the normal-map lookup
+    mat.onBeforeCompile = sh => {
+      sh.uniforms.offset2 = this.offset2;
+      sh.fragmentShader = sh.fragmentShader
+        .replace('#include <normalmap_pars_fragment>', '#include <normalmap_pars_fragment>\nuniform vec2 offset2;')
+        .replace('vec3 mapN = texture2D( normalMap, vNormalMapUv ).xyz * 2.0 - 1.0;',
+          'vec3 mapN = normalize( texture2D( normalMap, vNormalMapUv ).xyz * 2.0 - 1.0 + ( texture2D( normalMap, vNormalMapUv * 2.7 + offset2 ).xyz * 2.0 - 1.0 ) * vec3( 0.8, 0.8, 0.0 ) );');
+    };
+    return mat;
+  }
+
+  /** Winter: lakes become matte grey-white ice with only a faint texture. */
+  setIce(on: boolean) {
+    const m = this.lakeMaterial;
+    m.color.set(on ? '#cfd8de' : '#1f3b4a');
+    m.roughness = on ? 0.5 : 0.06;
+    m.envMapIntensity = on ? 1.2 : 4.5;
+    m.normalScale.setScalar(on ? 0.04 : 0.35);
   }
 
   update(dt: number) {
@@ -82,7 +98,7 @@ export class Water {
 
   dispose() {
     this.group.removeFromParent();
-    this.material.dispose(); this.normals.dispose();
+    this.material.dispose(); this.lakeMaterial.dispose(); this.normals.dispose();
     this.group.traverse(o => (o as THREE.Mesh).geometry?.dispose());
   }
 }
