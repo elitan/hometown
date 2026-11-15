@@ -1,5 +1,5 @@
-// Seasons as shader uniforms shared by every material that changes with them (ground, roofs, trees), so
-// switching season is instant: no rebuild, just new uniform values.
+// Seasons and night lights as shader uniforms shared by every material that changes with them (ground, roofs,
+// trees, windows, lamps, vehicles), so switching season or hour is instant: no rebuild, just new uniform values.
 import * as THREE from 'three';
 import type { Season } from './sun';
 
@@ -10,6 +10,14 @@ export const seasonUniforms = {
   uBare: { value: 0 },    // 0..1 deciduous trees without leaves
 };
 
+/** Night lights: `uLights` 0..1 turns on windows, street lamps and vehicle lights; `lightMap` holds lamp pools. */
+const black = new THREE.DataTexture(new Uint8Array([0, 0, 0, 255]), 1, 1);
+black.needsUpdate = true;
+export const nightUniforms = {
+  uLights: { value: 0 },
+  lightMap: { value: black as THREE.Texture },
+};
+
 export function setSeason(s: Season) {
   seasonUniforms.uSnow.value = s === 'winter' ? 1 : 0;
   seasonUniforms.uAutumn.value = s === 'autumn' ? 1 : 0;
@@ -18,7 +26,7 @@ export function setSeason(s: Season) {
 }
 
 const PARS = `
-uniform float uSnow; uniform float uAutumn; uniform float uSpring; uniform float uBare;
+uniform float uSnow; uniform float uAutumn; uniform float uSpring; uniform float uBare; uniform float uLights;
 float seasonHash(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
 float seasonNoise(vec2 p) {
   vec2 i = floor(p), f = fract(p); f = f * f * (3.0 - 2.0 * f);
@@ -41,7 +49,7 @@ function hook(mat: THREE.Material, key: string, fn: Hook) {
   const prev = mat.onBeforeCompile;
   mat.onBeforeCompile = (sh, r) => {
     prev.call(mat, sh, r);
-    Object.assign(sh.uniforms, seasonUniforms);
+    Object.assign(sh.uniforms, seasonUniforms, nightUniforms);
     sh.fragmentShader = sh.fragmentShader.replace('void main() {', PARS + '\nvoid main() {');
     fn(sh);
   };
@@ -72,7 +80,14 @@ export function seasonalGround(mat: THREE.Material, roadMask: THREE.Texture) {
   hook(mat, 'ground', sh => {
     sh.uniforms.roadMask = { value: roadMask };
     sh.fragmentShader = sh.fragmentShader
-      .replace('void main() {', 'uniform sampler2D roadMask;\nvoid main() {')
+      .replace('void main() {', 'uniform sampler2D roadMask;\nuniform sampler2D lightMap;\nvoid main() {')
+      // street lamp pools: the lit ground keeps its own colour, warmed by the lamp
+      .replace('#include <emissivemap_fragment>', `#include <emissivemap_fragment>
+        {
+          // bright ground (snow) needs less to look lit, and must not burn out to white
+          float pool = texture2D(lightMap, vMapUv).r, gl = dot(diffuseColor.rgb, vec3(0.3, 0.59, 0.11));
+          totalEmissiveRadiance += diffuseColor.rgb * vec3(1.0, 0.78, 0.5) * pool * uLights * mix(2.4, 0.55, smoothstep(0.15, 0.7, gl));
+        }`)
       .replace('#include <map_fragment>', `#include <map_fragment>
         diffuseColor.rgb = seasonGrass(diffuseColor.rgb);
         if (uSnow > 0.0) {
@@ -92,15 +107,7 @@ export function seasonalGround(mat: THREE.Material, roadMask: THREE.Texture) {
  */
 export function seasonalFoliage(mat: THREE.Material, kind: 'needle' | 'leaf') {
   hook(mat, kind, sh => {
-    sh.vertexShader = sh.vertexShader
-      .replace('void main() {', 'varying float vTreeSeed;\nvoid main() {')
-      .replace('#include <begin_vertex>', `#include <begin_vertex>
-        #ifdef USE_INSTANCING
-          vTreeSeed = fract(sin(instanceMatrix[3].x * 0.137 + instanceMatrix[3].z * 0.711) * 437.585);
-        #else
-          vTreeSeed = 0.5;
-        #endif`);
-    sh.fragmentShader = sh.fragmentShader.replace('void main() {', 'varying float vTreeSeed;\nvoid main() {');
+    instanceSeed(sh, 'vTreeSeed');
     if (kind === 'needle') {
       sh.fragmentShader = sh.fragmentShader.replace('#include <normal_fragment_maps>', '#include <normal_fragment_maps>' + SNOW_ON_TOP('uSnow * 0.85', '0.15'));
       return;
@@ -123,4 +130,73 @@ export function seasonalFoliage(mat: THREE.Material, kind: 'needle' | 'leaf') {
         #endif
       }`);
   });
+}
+
+/** A stable random number per instance (from its position), as a varying named `name`. */
+function instanceSeed(sh: THREE.WebGLProgramParametersWithUniforms, name: string) {
+  sh.vertexShader = sh.vertexShader
+    .replace('void main() {', `varying float ${name};\nvoid main() {`)
+    .replace('#include <begin_vertex>', `#include <begin_vertex>
+      #ifdef USE_INSTANCING
+        ${name} = fract(sin(instanceMatrix[3].x * 0.137 + instanceMatrix[3].y * 0.291 + instanceMatrix[3].z * 0.711) * 437.585);
+      #else
+        ${name} = 0.5;
+      #endif`);
+  sh.fragmentShader = sh.fragmentShader.replace('void main() {', `varying float ${name};\nvoid main() {`);
+}
+
+/** Window glass: about half the windows glow warm at night, each a slightly different shade. */
+export function glowingWindows(mat: THREE.Material) {
+  hook(mat, 'windows', sh => {
+    instanceSeed(sh, 'vWinSeed');
+    sh.fragmentShader = sh.fragmentShader.replace('#include <emissivemap_fragment>', `#include <emissivemap_fragment>
+      if (vWinSeed < 0.5) totalEmissiveRadiance += mix(vec3(1.0, 0.62, 0.3), vec3(1.0, 0.85, 0.6), fract(vWinSeed * 9.0)) * (1.6 + 1.6 * fract(vWinSeed * 23.0)) * uLights;`);
+  });
+}
+
+/** A light source that switches on at dusk (street lamp heads). `strength` > 1 makes it bloom. */
+export function glowingLamp(mat: THREE.Material, color: THREE.ColorRepresentation, strength: number) {
+  const c = new THREE.Color(color);
+  hook(mat, 'lamp' + c.getHexString() + strength, sh => {
+    sh.fragmentShader = sh.fragmentShader.replace('#include <emissivemap_fragment>', `#include <emissivemap_fragment>
+      totalEmissiveRadiance += vec3(${c.r.toFixed(3)}, ${c.g.toFixed(3)}, ${c.b.toFixed(3)}) * ${strength.toFixed(2)} * uLights;`);
+  });
+}
+
+/** Vehicle lamps, coloured by vertex colour (white front, red rear): faint by day, bright at night. */
+export function glowingVehicleLamps(mat: THREE.Material) {
+  hook(mat, 'vehiclelamps', sh => {
+    sh.fragmentShader = sh.fragmentShader.replace('#include <emissivemap_fragment>', `#include <emissivemap_fragment>
+      #ifdef USE_COLOR
+        totalEmissiveRadiance = vColor.rgb * mix(0.15, 7.0, uLights);
+      #endif`);
+  });
+}
+
+/** Train paint: the dark window band and windscreen glow from the lit inside at night. */
+export function glowingTrainWindows(mat: THREE.Material) {
+  const band = new THREE.Color('#1c2430');
+  hook(mat, 'trainwindows', sh => {
+    sh.fragmentShader = sh.fragmentShader.replace('#include <emissivemap_fragment>', `#include <emissivemap_fragment>
+      #ifdef USE_COLOR
+        if (distance(vColor.rgb, vec3(${band.r.toFixed(4)}, ${band.g.toFixed(4)}, ${band.b.toFixed(4)})) < 0.004)
+          totalEmissiveRadiance += vec3(1.0, 0.88, 0.68) * 0.55 * uLights;
+      #endif`);
+  });
+}
+
+/** Soft cone of headlight on the road ahead (u = distance from the lamps, v = across), drawn additively. */
+export function beamTexture() {
+  const W = 128, H = 64, cv = document.createElement('canvas'); cv.width = W; cv.height = H;
+  const ctx = cv.getContext('2d')!, img = ctx.createImageData(W, H);
+  for (let x = 0; x < W; x++) for (let y = 0; y < H; y++) {
+    const u = x / (W - 1), v = Math.abs(y / (H - 1) - 0.5) * 2, half = 0.25 + 0.75 * u;
+    const across = Math.max(0, 1 - v / half), a = Math.pow(1 - u, 1.6) * across * across * Math.min(1, u * 12);
+    const o = (y * W + x) * 4;
+    img.data[o] = img.data[o + 1] = img.data[o + 2] = Math.round(255 * a); img.data[o + 3] = 255;
+  }
+  ctx.putImageData(img, 0, 0);
+  const t = new THREE.CanvasTexture(cv);
+  t.colorSpace = THREE.SRGBColorSpace;
+  return t;
 }

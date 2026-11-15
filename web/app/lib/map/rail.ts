@@ -3,7 +3,8 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { pick, rand, type XY } from './geo';
-import { buildGraph, nodeKey, pointAt, type Edge } from './traffic';
+import { beamMaterial, buildGraph, headlightBeam, nodeKey, pointAt, type Edge } from './traffic';
+import { glowingLamp, glowingTrainWindows } from './season';
 
 type Height = (x: number, y: number) => number;
 export type RailWay = { pts: XY[]; bridgeAt?: Height; tunnel?: boolean };
@@ -179,10 +180,15 @@ export class Railway {
   private surface = new Map<number, Height>(); // edge id -> rail-bed height
   readonly trains: Train[] = [];
   private material = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.42, metalness: 0.3 }); // semi-gloss paint
+  private beam = beamMaterial();
+  private lamp = new THREE.MeshStandardMaterial({ color: '#fff6e0', roughness: 0.3 });
+  private lampGeo = new THREE.BoxGeometry(0.1, 0.3, 0.5);
   private nextSpawn = rand(1, 4);
   private entries: Entry[] = [];
 
   constructor(ways: RailWay[], H: Height, private R: number) {
+    glowingTrainWindows(this.material);
+    glowingLamp(this.lamp, '#fff1d6', 8);
     // anchor heights at way ends: bridge deck ends win, so the track meets the deck level
     const anchors = new Map<string, number>();
     for (const w of ways) if (w.bridgeAt) for (const p of [w.pts[0], w.pts[w.pts.length - 1]]) anchors.set(nodeKey(p), w.bridgeAt(p[0], p[1]));
@@ -233,7 +239,10 @@ export class Railway {
     if (this.entries.length) this.spawn(true);
   }
 
-  dispose() { this.group.removeFromParent(); this.material.dispose(); }
+  dispose() {
+    this.group.removeFromParent(); this.material.dispose();
+    this.beam.map?.dispose(); this.beam.dispose(); this.lamp.dispose(); this.lampGeo.dispose();
+  }
 
   private choose(e: Edge): Edge | null {
     const opts = (this.out.get(e.to) ?? []).map(i => this.edges[i]).filter(n => n.id !== e.twin);
@@ -253,6 +262,10 @@ export class Railway {
     const start = pick(this.entries), consist = makeConsist();
     const length = consist.cars.reduce((s, c) => s + c.len + 1, 0);
     const meshes = consist.cars.map(c => { const m = new THREE.Mesh(c.geo, this.material); m.castShadow = true; this.group.add(m); return m; });
+    // headlights on the front of the leading car, and their beam down the track
+    const front = consist.cars[0].len / 2;
+    for (const z of [-0.95, 0.95]) { const l = new THREE.Mesh(this.lampGeo, this.lamp); l.position.set(front + 0.06, 1.55, z); meshes[0].add(l); }
+    meshes[0].add(headlightBeam(this.beam, front, 40, 7, 0.08)); // just above the rails
     const train: Train = { meshes, cars: consist.cars, path: [start.edge], head: start.s + (midway ? 150 + length + rand(100, 400) : 0), v: consist.speed * 0.85, vmax: consist.speed, length, name: consist.name };
     for (const m of meshes) m.userData.vehicle = { kind: 'train', train };
     this.trains.push(train);
@@ -271,6 +284,9 @@ export class Railway {
     }
     return [0, 0, 0];
   }
+
+  /** Night: headlight beam brightness (0..1). */
+  setLights(f: number) { this.beam.opacity = 0.5 * f; this.beam.visible = f > 0.01; }
 
   update(dt: number) {
     dt = Math.min(dt, 0.05);

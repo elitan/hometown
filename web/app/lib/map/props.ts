@@ -8,6 +8,7 @@ import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js
 import { polygons, rand, toXY, type LocalProjection, type OsmData, type OsmElement, type Poly, type XY } from './geo';
 import { obb, type OBB } from './roofs';
 import { PAINT, carGeometry, carMaterials, type Variant } from './traffic';
+import { glowingLamp } from './season';
 
 type Height = (x: number, y: number) => number;
 export type PropsInput = {
@@ -57,8 +58,11 @@ const vc = (extra: THREE.MeshStandardMaterialParameters = {}) => new THREE.MeshS
 const lampGeo = () => merged([
   [new THREE.CylinderGeometry(0.06, 0.09, 6.4, 8).translate(0, 3.2, 0), '#50555b'],
   [new THREE.BoxGeometry(1.3, 0.07, 0.07).translate(0.62, 6.3, 0), '#50555b'],
-  [new THREE.BoxGeometry(0.55, 0.12, 0.26).translate(1.25, 6.22, 0), '#e9ecef'],
 ]);
+/** The lamp head (separate, so it can glow at night). */
+const LAMP_HEAD: [number, number] = [1.25, 6.22];
+const lampHeadGeo = () => new THREE.BoxGeometry(0.55, 0.12, 0.26).translate(LAMP_HEAD[0], LAMP_HEAD[1], 0);
+const lampHeadMat = () => { const m = mat('#e9ecef', { roughness: 0.4 }); glowingLamp(m, '#ffd29a', 9); return m; };
 const busStopGeo = () => merged([
   [new THREE.CylinderGeometry(0.04, 0.04, 2.6, 8).translate(0, 1.3, 0), '#7d8287'],
   [new THREE.BoxGeometry(0.04, 0.5, 0.5).translate(0, 2.45, 0), '#f2c400'],
@@ -188,6 +192,8 @@ export class Props {
   readonly group = new THREE.Group();
   private turbines: Turbine[] = [];
   counts: Record<string, number> = {};
+  /** Street lamp heads (map x, y and height above the ground), for the pools of light they cast at night. */
+  readonly lights: { x: number; y: number; h: number }[] = [];
 
   constructor({ P, data, H, R, buildings, roads }: PropsInput) {
     const batch = new Batch();
@@ -222,7 +228,13 @@ export class Props {
     };
 
     const lamps: XY[] = [];
-    const addLamp = (x: number, y: number, yaw: number) => { lamps.push([x, y]); batch.add('lamp', lampGeo, () => vc({ emissive: '#000000' }), at(x, y, yaw)); count('lamps'); };
+    const addLamp = (x: number, y: number, yaw: number) => {
+      lamps.push([x, y]);
+      batch.add('lamp', lampGeo, () => vc(), at(x, y, yaw));
+      batch.add('lampHead', lampHeadGeo, lampHeadMat, at(x, y, yaw), false);
+      this.lights.push({ x: x + Math.cos(yaw) * LAMP_HEAD[0], y: y + Math.sin(yaw) * LAMP_HEAD[0], h: LAMP_HEAD[1] });
+      count('lamps');
+    };
     let shelters: XY[] = [];
 
     for (const el of data.elements) {
@@ -394,7 +406,7 @@ export class Props {
   /** One instanced mesh per (model, paint) for all parked cars, built once every parking lot is seen. */
   private flushParked() {
     if (!this.parkedBatch.size) return;
-    this.carMats ??= carMaterials();
+    this.carMats ??= carMaterials(false);
     for (const [key, list] of this.parkedBatch) {
       const [variant, paint] = key.split('|');
       const im = new THREE.InstancedMesh(carGeometry(variant as Variant, paint), this.carMats, list.length);

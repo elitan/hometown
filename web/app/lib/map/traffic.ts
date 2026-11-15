@@ -2,6 +2,7 @@
 // easing into curves and junctions, keeping distance to the car ahead and following the terrain.
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
+import { beamTexture, glowingVehicleLamps } from './season';
 import { pick, rand, type XY } from './geo';
 
 export type RoadWay = { pts: XY[]; highway: string; oneway: boolean; deckAt?: (x: number, y: number) => number; tunnel?: boolean; lane?: number };
@@ -136,14 +137,31 @@ export function carGeometry(v: Variant, paint: string) {
   return g;
 }
 
+function lampMaterial() {
+  const m = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.3 });
+  glowingVehicleLamps(m);
+  return m;
+}
+
+/** Headlight beam on the road, as a child of a vehicle whose local +x is forward and y = 0 the ground. */
+export function headlightBeam(material: THREE.Material, front: number, length: number, width: number, y = 0.12) {
+  const m = new THREE.Mesh(new THREE.PlaneGeometry(length, width).rotateX(-Math.PI / 2).translate(front + length / 2, y, 0), material);
+  m.renderOrder = 2;
+  m.raycast = () => {}; // not clickable: clicks go to the vehicle
+  return m;
+}
+export function beamMaterial() {
+  return new THREE.MeshBasicMaterial({ map: beamTexture(), color: '#ffe2b0', transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -2 });
+}
+
 /** Car paint with a clear coat, reflective glass, rubber, metal rims, slightly glowing lamps. */
-export function carMaterials(): THREE.Material[] {
+export function carMaterials(lit = true): THREE.Material[] {
   return [
     new THREE.MeshPhysicalMaterial({ vertexColors: true, roughness: 0.38, metalness: 0.35, clearcoat: 0.9, clearcoatRoughness: 0.08 }),
     new THREE.MeshStandardMaterial({ color: '#1a232b', roughness: 0.05, metalness: 0.3, envMapIntensity: 3 }),
     new THREE.MeshStandardMaterial({ color: '#1b1b1d', roughness: 0.9 }),
     new THREE.MeshStandardMaterial({ color: '#c3c6ca', roughness: 0.3, metalness: 0.9 }),
-    new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.3, emissive: '#fff4cf', emissiveIntensity: 0.15 }),
+    lit ? lampMaterial() : new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.3 }),
   ];
 }
 
@@ -153,6 +171,7 @@ export type Car = { mesh: THREE.Mesh; edge: Edge; next: Edge; prev: Edge | null;
 
 export class Traffic {
   readonly group = new THREE.Group();
+  private beam = beamMaterial();
   private edges: Edge[]; private out: Map<string, number[]>;
   private cars: Car[] = [];
   private material = carMaterials();
@@ -168,6 +187,7 @@ export class Traffic {
   dispose() {
     this.group.removeFromParent();
     for (const m of this.material) m.dispose();
+    this.beam.map?.dispose(); this.beam.dispose();
   }
 
   private spawn(pool: Edge[], total: number, car?: Car) {
@@ -177,7 +197,10 @@ export class Traffic {
     const mesh = car?.mesh ?? new THREE.Mesh(carGeometry(v, pick(PAINT)), this.material);
     mesh.castShadow = true;
     const c: Car = car ?? { mesh, edge: e, next: e, prev: null, s: 0, v: 0, vmax: 1, heading: 0 };
-    if (!car) mesh.userData.vehicle = { kind: 'car', car: c, name: v === 'van' ? 'Van' : v === 'estate' ? 'Estate car' : 'Saloon car' };
+    if (!car) {
+      mesh.userData.vehicle = { kind: 'car', car: c, name: v === 'van' ? 'Van' : v === 'estate' ? 'Estate car' : 'Saloon car' };
+      mesh.add(headlightBeam(this.beam, v === 'van' ? 2.45 : 2.3, 16, 6));
+    }
     c.edge = e; c.prev = null; c.s = rand(0, e.len); c.next = this.chooseNext(e);
     c.vmax = rand(0.85, 1.05); c.v = Math.min(e.speed * c.vmax, 8);
     if (!car) { this.cars.push(c); this.group.add(mesh); }
@@ -216,6 +239,9 @@ export class Traffic {
     const h1 = Math.atan2(b[1] - a[1], b[0] - a[0]), h2 = Math.atan2(d[1] - b[1], d[0] - b[0]);
     return Math.abs(Math.atan2(Math.sin(h2 - h1), Math.cos(h2 - h1)));
   }
+
+  /** Night: how bright the headlight beams on the road are (0..1). */
+  setLights(f: number) { this.beam.opacity = 0.55 * f; this.beam.visible = f > 0.01; }
 
   update(dt: number) {
     dt = Math.min(dt, 0.05);

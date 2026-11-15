@@ -8,7 +8,7 @@ import { measureRoof, obb, polyArea, roofGeometry, roofSpec } from './roofs';
 import { Traffic, type Car, type RoadWay } from './traffic';
 import { Railway, type RailWay, type Train } from './rail';
 import { Post, SkyDome, fitShadow, groundMaterial, skyDirection } from './look';
-import { seasonalGround, seasonalRoof, setSeason } from './season';
+import { nightUniforms, seasonalGround, seasonalRoof, setSeason } from './season';
 import { instant, sunPosition, type Season } from './sun';
 import { Water } from './water';
 import { Forest, type TreeSpec } from './forest';
@@ -222,6 +222,12 @@ export class MapEngine {
       this.sun.intensity = moonI;
       this.sun.color.set(0x8fa6d8);
     }
+    // lights come on around sunset
+    const lights = 1 - ss(e, -4, 3);
+    nightUniforms.uLights.value = lights;
+    this.post.setGlow(lights);
+    this.traffic?.setLights(lights);
+    this.railway?.setLights(lights);
     this.hemi.intensity = 0.16 + 0.19 * day;
     this.hemi.color.set(0x3a4a70).lerp(new THREE.Color(0xdfeaf5), day);
     this.hemi.groundColor.set(0x1a1f2a).lerp(new THREE.Color(0x6b7a52), day);
@@ -525,6 +531,8 @@ export class MapEngine {
     // street furniture and small structures (lamps, bus stops, fences, power lines, parked cars, ...)
     this.props = new Props({ P, data, H, R, buildings: named.buildings.map(b => b.p), roads: allRoads });
     world.add(this.props.group);
+    nightUniforms.lightMap.value.dispose();
+    nightUniforms.lightMap.value = this.lampPools(this.props.lights, R);
 
     // lakes with real water surfaces
     // the sea: if the area reaches down to sea level, put a sea surface at 0 m (0.3 m up to hide shore noise)
@@ -534,6 +542,7 @@ export class MapEngine {
     // railway track + trains
     if (railWays.length) {
       this.railway = new Railway(railWays, H, R);
+      this.railway.setLights(nightUniforms.uLights.value);
       world.add(this.railway.group);
     }
 
@@ -541,6 +550,7 @@ export class MapEngine {
     if (drivable.length) {
       this.traffic = new Traffic(drivable, H, R);
       this.traffic.group.visible = this.trafficOn;
+      this.traffic.setLights(nightUniforms.uLights.value);
       world.add(this.traffic.group);
     }
 
@@ -644,6 +654,21 @@ export class MapEngine {
     this.setLabels(lbl.map(l => ({ ...l, h: H(l.x, l.y) + (l.kind === 'place' ? 45 : 4) })));
 
     this.frame(R, H(0, 0), animate);
+  }
+
+  /** Pools of light under street lamps, as a texture over the map (1 = fully lit), for the ground at night. */
+  private lampPools(lamps: { x: number; y: number; h: number }[], R: number) {
+    const S = 2048, k = S / (2 * R), cv = document.createElement('canvas'); cv.width = cv.height = S;
+    const ctx = cv.getContext('2d')!;
+    ctx.fillStyle = '#000'; ctx.fillRect(0, 0, S, S);
+    ctx.globalCompositeOperation = 'lighter';
+    for (const l of lamps) {
+      const x = (l.x + R) * k, y = (R - l.y) * k, r = l.h * 1.7 * k;
+      const g = ctx.createRadialGradient(x, y, 0, x, y, r);
+      g.addColorStop(0, 'rgba(255,255,255,0.9)'); g.addColorStop(0.2, 'rgba(255,255,255,0.62)'); g.addColorStop(0.55, 'rgba(255,255,255,0.2)'); g.addColorStop(1, 'rgba(255,255,255,0)');
+      ctx.fillStyle = g; ctx.fillRect(x - r, y - r, 2 * r, 2 * r);
+    }
+    return new THREE.CanvasTexture(cv);
   }
 
   private skirt(H: (x: number, y: number) => number, R: number, seg: number, bottom: number) {

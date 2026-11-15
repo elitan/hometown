@@ -6,6 +6,7 @@ import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
 import { GTAOPass } from 'three/examples/jsm/postprocessing/GTAOPass.js';
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
+import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
 
 /** Direction toward the sun (or moon) for an elevation and an azimuth clockwise from north, in degrees. */
 export function skyDirection(elevation: number, azimuth: number) {
@@ -56,12 +57,12 @@ export class SkyDome {
     this.skyScene.add(dome);
 
     const pts: number[] = [];
-    for (let i = 0; i < 1800; i++) {
+    for (let i = 0; i < 2600; i++) {
       const v = new THREE.Vector3(Math.random() * 2 - 1, Math.random(), Math.random() * 2 - 1).normalize().multiplyScalar(4500);
       if (v.y > 150) pts.push(v.x, v.y, v.z);
     }
     const g = new THREE.BufferGeometry().setAttribute('position', new THREE.Float32BufferAttribute(pts, 3));
-    this.stars = new THREE.PointsMaterial({ color: 0xffffff, size: 2.5, sizeAttenuation: false, transparent: true, opacity: 0, depthTest: false, depthWrite: false });
+    this.stars = new THREE.PointsMaterial({ color: 0xffffff, size: 1, sizeAttenuation: false, transparent: true, opacity: 0, depthTest: false, depthWrite: false });
     const stars = new THREE.Points(g, this.stars);
     stars.renderOrder = 2;
     this.skyScene.add(stars);
@@ -95,6 +96,10 @@ export class SkyDome {
 export class Post {
   readonly composer: EffectComposer;
   private ao: GTAOPass;
+  private bloom: UnrealBloomPass;
+
+  /** Glow around lights, 0 (off, by day) to 1 (night). */
+  setGlow(f: number) { this.bloom.strength = 0.9 * f; this.bloom.enabled = f > 0.02; }
 
   constructor(renderer: THREE.WebGLRenderer, scene: THREE.Scene, camera: THREE.PerspectiveCamera, w: number, h: number) {
     // MSAA render target (the default framebuffer's antialiasing doesn't apply once we post-process)
@@ -114,7 +119,11 @@ export class Post {
     this.ao.setSize(w, h);
     this.composer.addPass(this.ao);
 
-    // (no bloom: against this bright physical sky it washed the whole scene out)
+    // bloom only at night, and only for real light sources (HDR values above 1): by day, against the bright
+    // physical sky, it washed the whole scene out
+    this.bloom = new UnrealBloomPass(new THREE.Vector2(w / 2, h / 2), 0, 0.5, 1.0);
+    this.bloom.enabled = false;
+    this.composer.addPass(this.bloom);
     this.composer.addPass(new OutputPass());
   }
 

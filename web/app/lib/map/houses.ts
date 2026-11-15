@@ -2,6 +2,7 @@
 // frames and reflective glass, front doors and chimneys — the things that stop houses reading as boxes.
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
+import { glowingWindows } from './season';
 import { pip, type Poly, type XY } from './geo';
 import type { OBB, RoofSpec } from './roofs';
 
@@ -206,7 +207,9 @@ export class HouseDetails {
     };
     const white = new THREE.MeshStandardMaterial({ color: '#f3f1ea', roughness: 0.6 });
     add(new THREE.BoxGeometry(1.25, 1.45, 0.08), white, this.frames);
-    add(new THREE.BoxGeometry(1.03, 1.23, 0.04), new THREE.MeshStandardMaterial({ color: '#2b3a46', roughness: 0.08, metalness: 0.1, envMapIntensity: 3 }), this.glass);
+    const glass = new THREE.MeshStandardMaterial({ color: '#2b3a46', roughness: 0.08, metalness: 0.1, envMapIntensity: 3 });
+    glowingWindows(glass);
+    add(new THREE.BoxGeometry(1.03, 1.23, 0.04), glass, this.glass);
     // glazing bars: a vertical bar and one across the upper third, so windows read as Swedish two-pane windows
     add(mergeGeometries([new THREE.BoxGeometry(0.07, 1.23, 0.05), new THREE.BoxGeometry(1.03, 0.06, 0.05).translate(0, 0.2, 0)])!.translate(0, 0, 0.03), white, this.glass);
     add(new THREE.BoxGeometry(0.2, 1, 0.2), white, this.corners);

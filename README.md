@@ -40,7 +40,7 @@ In Sweden it goes further: **1 m laser terrain, real measured trees and real roo
 - **Real trees.** In Sweden every tree comes from **airborne laser scanning**, with its true position, height and crown. Elsewhere, forests are filled from the map.
 - **Real roofs.** Roof height, pitch, ridge direction and shape (flat, gabled or hipped) are **measured from laser points** for each building.
 - **It's alive.** Cars drive the actual road network on the right-hand side; Pågatåg and freight trains run the actual railways, over 3D track and bridges.
-- **Any season, any hour.** Spring, summer, autumn or winter (snow, bare birches, frozen lakes), and a clock that puts the sun where it really is for that place and day, through golden hour to a starry night. Play a whole day in a minute.
+- **Any season, any hour.** Spring, summer, autumn or winter (snow, bare birches, frozen lakes), and a clock that puts the sun where it really is for that place and day, through golden hour to a starry night, when windows, street lamps and headlights come on. Play a whole day in a minute.
 - **Looks the part.** Physical sky, soft shadows, ambient occlusion, rippling lakes and sea, leafy trees, houses with windows, doors and chimneys, and parked cars, street lamps, bus stops, fences and stone walls.
 - **Fun to explore.** Hover for street and building names, follow any vehicle, drive the camera like a city builder (grab-drag, WASD, Q/E), save screenshots, and pick a map style (illustrated, hybrid or satellite).
 
