@@ -15,7 +15,7 @@ import { Forest, type TreeSpec } from './forest';
 import { Props } from './props';
 import { HouseDetails, PLINTH, roofTexture, roofUVs, wallTexture } from './houses';
 import { cleanPhoto } from './photo';
-import { bridgeGeometry, isBridge, isTunnel, makeDeckAt, type Bridge } from './bridges';
+import { bridgeGeometry, findUnderpasses, isBridge, isTunnel, makeDeckAt, makeSpansAt, type Bridge } from './bridges';
 import {
   FIELDS, GROUND, LAND, LAND_ORDER, PLACE_KINDS, ROAD, ROOFS, UNPAVED, WALLS, WATER, buildingHeight, pretty, type MapStyle,
 } from './styles';
@@ -377,7 +377,13 @@ export class MapEngine {
     this.place = P.unproj(0, 0) as [number, number];
     this.lightDirty = true;
 
-    const { tex, roadMask, forests, sample, roofTints } = this.drawMapTexture(P, data, R, style, img, laser);
+    // short tunnels under roads are underpasses: drawn on the surface, with a deck carrying the road above
+    const { underIds, decks: overDecks } = findUnderpasses(data.elements.filter(el => el.type === 'way' && el.geometry && el.geometry.length > 1 && el.tags?.highway && el.tags.area !== 'yes').map(el => {
+      const t = el.tags!;
+      return { id: el.id, pts: toXY(P, el.geometry!), width: ROAD[t.highway]?.[0] ?? 3, tunnel: isTunnel(t), bridge: isBridge(t), layer: parseFloat(t.layer) || 0 };
+    }), H);
+    const tunnel = (el: { id: number }, t: Record<string, string>) => isTunnel(t) && !underIds.has(el.id);
+    const { tex, roadMask, forests, sample, roofTints } = this.drawMapTexture(P, data, R, style, img, laser, tunnel);
     const g = new THREE.PlaneGeometry(2 * R, 2 * R, seg, seg).rotateX(-Math.PI / 2);
     const pos = g.attributes.position;
     let minY = Infinity;
@@ -478,6 +484,7 @@ export class MapEngine {
       if ((t.highway || t.railway === 'rail') && el.type === 'way' && el.geometry && el.geometry.length > 1 && isBridge(t)) {
         bridges.push({ pts: toXY(P, el.geometry), width: t.railway ? 4 : (ROAD[t.highway]?.[0] ?? 3), rail: !!t.railway });
       }
+      for (const pts of overDecks.get(el.id) ?? []) bridges.push({ pts, width: ROAD[t.highway]?.[0] ?? 3, rail: false });
       if (/^(rail|light_rail|narrow_gauge)$/.test(t.railway ?? '') && el.type === 'way' && el.geometry && el.geometry.length > 1 && t.service !== 'yard') {
         const pts = toXY(P, el.geometry);
         railWays.push({ pts, bridgeAt: isBridge(t) ? makeDeckAt(pts, H) : undefined, tunnel: isTunnel(t) });
@@ -487,11 +494,12 @@ export class MapEngine {
         if (t.oneway === '-1') pts.reverse();
         drivable.push({
           pts, highway: t.highway.replace('_link', ''), oneway: t.oneway === 'yes' || t.oneway === '-1' || t.junction === 'roundabout' || t.highway === 'motorway',
-          deckAt: isBridge(t) ? makeDeckAt(pts, H) : undefined, tunnel: isTunnel(t),
+          deckAt: isBridge(t) ? makeDeckAt(pts, H) : overDecks.has(el.id) ? makeSpansAt(overDecks.get(el.id)!, ROAD[t.highway]?.[0] ?? 3, H) : undefined,
+          tunnel: tunnel(el, t),
         });
       }
       if (t.natural === 'water' || t.waterway === 'riverbank' || t.landuse === 'reservoir' || t.landuse === 'basin') lakes.push(...polygons(P, el));
-      if (t.highway && el.type === 'way' && el.geometry && el.geometry.length > 1 && t.area !== 'yes' && !isBridge(t) && !isTunnel(t)) allRoads.push({ pts: toXY(P, el.geometry), w: ROAD[t.highway]?.[0] ?? 3, highway: t.highway });
+      if (t.highway && el.type === 'way' && el.geometry && el.geometry.length > 1 && t.area !== 'yes' && !isBridge(t) && !tunnel(el, t)) allRoads.push({ pts: toXY(P, el.geometry), w: ROAD[t.highway]?.[0] ?? 3, highway: t.highway });
       if (!t.name) continue;
       if (t.highway && el.geometry) named.roads.push({ pts: toXY(P, el.geometry), w: ROAD[t.highway]?.[0] ?? 3, name: t.name, kind: pretty(t.highway) + ' road' });
       else if (t.waterway && el.geometry && t.waterway !== 'riverbank') named.roads.push({ pts: toXY(P, el.geometry), w: 4, name: t.name, kind: pretty(t.waterway) });
@@ -714,7 +722,8 @@ export class MapEngine {
 
   // ---------- map texture (2D layers draped over terrain) ----------
 
-  private drawMapTexture(P: LocalProjection, data: OsmData, R: number, style: MapStyle, img: Imagery | null, laser: LaserTrees | null) {
+  private drawMapTexture(P: LocalProjection, data: OsmData, R: number, style: MapStyle, img: Imagery | null, laser: LaserTrees | null,
+                         tunnel: (el: { id: number }, t: Record<string, string>) => boolean) {
     const S = Math.min(4096, this.renderer.capabilities.maxTextureSize);
     const cv = document.createElement('canvas'); cv.width = cv.height = S;
     const ctx = cv.getContext('2d')!;
@@ -736,7 +745,7 @@ export class MapEngine {
     for (const el of data.elements) {
       const t = el.tags || {};
       if (t.building) { footprints.push(...polygons(P, el)); continue; }
-      if ((t.highway || t.railway) && (isBridge(t) || isTunnel(t))) continue; // bridges get a deck; tunnels are underground
+      if ((t.highway || t.railway) && (isBridge(t) || tunnel(el, t))) continue; // bridges get a deck; tunnels are underground
       if (t.highway && el.type === 'way' && el.geometry && t.area !== 'yes') {
         const [w, c] = ROAD[t.highway] || [3, '#8a8a8a'];
         roads.push({ pts: toXY(P, el.geometry), w, c, paved: !UNPAVED.has(t.highway) });

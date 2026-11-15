@@ -207,7 +207,9 @@ export class HouseDetails {
     };
     const white = new THREE.MeshStandardMaterial({ color: '#f3f1ea', roughness: 0.6 });
     add(new THREE.BoxGeometry(1.25, 1.45, 0.08), white, this.frames);
-    const glass = new THREE.MeshStandardMaterial({ color: '#2b3a46', roughness: 0.08, metalness: 0.1, envMapIntensity: 3 });
+    // the glass is only a centimetre in front of its frame: pull it forward in the depth test, or far-away windows
+    // flicker between frame and (lit) glass as the camera moves
+    const glass = new THREE.MeshStandardMaterial({ color: '#2b3a46', roughness: 0.08, metalness: 0.1, envMapIntensity: 3, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -8 });
     glowingWindows(glass);
     add(new THREE.BoxGeometry(1.03, 1.23, 0.04), glass, this.glass);
     // glazing bars: a vertical bar and one across the upper third, so windows read as Swedish two-pane windows

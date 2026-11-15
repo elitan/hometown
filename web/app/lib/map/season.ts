@@ -150,7 +150,9 @@ export function glowingWindows(mat: THREE.Material) {
   hook(mat, 'windows', sh => {
     instanceSeed(sh, 'vWinSeed');
     sh.fragmentShader = sh.fragmentShader.replace('#include <emissivemap_fragment>', `#include <emissivemap_fragment>
-      if (vWinSeed < 0.5) totalEmissiveRadiance += mix(vec3(1.0, 0.62, 0.3), vec3(1.0, 0.85, 0.6), fract(vWinSeed * 9.0)) * (1.6 + 1.6 * fract(vWinSeed * 23.0)) * uLights;`);
+      // far away a window is a pixel or less: keep it dimmer so it doesn't sparkle as the camera moves
+      float winFar = mix(1.0, 0.5, smoothstep(150.0, 900.0, length(vViewPosition)));
+      if (vWinSeed < 0.5) totalEmissiveRadiance += mix(vec3(1.0, 0.62, 0.3), vec3(1.0, 0.85, 0.6), fract(vWinSeed * 9.0)) * (0.8 + 0.8 * fract(vWinSeed * 23.0)) * uLights * winFar;`);
   });
 }
 
