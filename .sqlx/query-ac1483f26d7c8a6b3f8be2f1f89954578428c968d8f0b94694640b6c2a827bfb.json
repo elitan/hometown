@@ -1,0 +1,40 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT info, data FROM area_cache WHERE key = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "info",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "area_cache",
+            "name": "info"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "data",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "area_cache",
+            "name": "data"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "ac1483f26d7c8a6b3f8be2f1f89954578428c968d8f0b94694640b6c2a827bfb"
+}

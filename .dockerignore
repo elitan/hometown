@@ -1,0 +1,10 @@
+target
+web/node_modules
+web/dist
+.env
+.git
+.env.local
+.cache
+.dev
+.claude
+docs

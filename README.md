@@ -41,7 +41,7 @@ In Sweden it goes further: **1 m laser terrain, real measured trees and real roo
 - **Real roofs.** Roof height, pitch, ridge direction and shape (flat, gabled or hipped) are **measured from laser points** for each building.
 - **It's alive.** Cars drive the actual road network on the right-hand side; Pågatåg and freight trains run the actual railways, over 3D track and bridges.
 - **Looks the part.** Physical sky, soft shadows, ambient occlusion, rippling lakes and sea, leafy trees, houses with windows, doors and chimneys, and parked cars, street lamps, bus stops, fences and stone walls.
-- **Fun to explore.** Hover for street and building names, follow any vehicle, drive the camera with the arrow keys, save screenshots, and pick a map style (illustrated, hybrid or satellite).
+- **Fun to explore.** Hover for street and building names, follow any vehicle, drive the camera like a city builder (grab-drag, WASD, Q/E), save screenshots, and pick a map style (illustrated, hybrid or satellite).
 
 ## Sweden in HD
 
@@ -57,34 +57,48 @@ Flip the **Data** switch in the app to compare:
 
 ## Get started
 
+Hometown is one small Rust binary (with the web app embedded) plus Postgres. The quickest way to run it is Docker:
+
 ```bash
-npm install
-npm run dev
+docker compose up --build
 ```
 
 Open http://localhost:3000. That's it: everything works with open data out of the box.
+
+### Develop
+
+Requirements: Rust, Bun, [just](https://github.com/casey/just) and Docker (for Postgres).
+
+```bash
+just dev      # Postgres + api on :3000 + Vite on :5173, in the background
+just check    # migrate, regenerate types, compile, typecheck, reload the api
+just verify   # + format, clippy, tests and the frontend build
+```
+
+Then open http://localhost:5173. Built on [northstack](https://github.com/elitan/northstack); see [CLAUDE.md](CLAUDE.md) for how the code is organised.
 
 ### Turn on Sweden HD (optional, free)
 
 1. Create a free account on [Geotorget](https://geotorget.lantmateriet.se/) and order the free products
    **Markhöjdmodell Nedladdning** and **Laserdata Nedladdning, skog**.
-2. Copy `.env.example` to `.env.local` and add your login:
+2. Add your login to `.env` (created from `.env.example` by `just dev`; Docker Compose reads it too):
 
    ```
    LM_USER=you@example.com
    LM_PASS=your-password
    ```
 
-The login is only used by the server-side API routes and never reaches the browser. Each area is processed once
-(10–40 s the first time) and then served from a disk cache in `.cache/`.
+The login is only used by the server and never reaches the browser. Each area is processed once
+(a few seconds to half a minute the first time) and then served from Postgres.
 
 ### Controls
 
 | | |
 | --- | --- |
-| Drag / arrow keys | Move |
-| Right-drag / Shift + arrows | Rotate and tilt |
-| Scroll / + − | Zoom |
+| Left-drag (grab the ground) / WASD / arrow keys | Move |
+| Right- or middle-drag / Q E / Shift + ← → | Rotate |
+| Right- or middle-drag / R F / Shift + ↑ ↓ | Tilt |
+| Scroll / + − / Page Up, Page Down | Zoom |
 | Click a car or train | Follow it (Esc to stop) |
 
 ## How it works
@@ -100,16 +114,18 @@ place name ─► Nominatim ─► OpenStreetMap ─► buildings, roads, water,
 
 | Part | Where |
 | --- | --- |
-| Data sources | `src/lib/map/sources.ts` |
-| Scene, terrain, buildings, labels, camera | `src/lib/map/engine.ts` |
-| Lighting and post-processing | `src/lib/map/look.ts` |
+| Data sources | `web/src/lib/map/sources.ts` |
+| Scene, terrain, buildings, labels, camera | `web/src/lib/map/engine.ts` |
+| Lighting and post-processing | `web/src/lib/map/look.ts` |
 | Trees · houses · roofs · water | `forest.ts` · `houses.ts` · `roofs.ts` · `water.ts` |
 | Bridges · railway and trains · road traffic | `bridges.ts` · `rail.ts` · `traffic.ts` |
 | Street furniture | `props.ts` |
-| Laser processing (server) | `src/lib/trees.ts`, `src/lib/laserCache.ts`, `src/app/api/lm/*` |
-| 1 m terrain (server) | `src/lib/dtm.ts` |
+| Laser processing (server, Rust) | `app/src/features/lm/laser.rs` |
+| 1 m terrain (server, Rust) | `app/src/features/lm/dtm.rs` |
 
-Built with Next.js, React and three.js.
+The server is Rust ([northstack](https://github.com/elitan/northstack): axum, sqlx, Postgres) and reads
+Lantmäteriet's Cloud Optimized GeoTIFFs and COPC point clouds directly, downloading only the parts under
+the area. The browser side is React and three.js, built with Vite.
 
 ## Data and credits
 
