@@ -20,6 +20,8 @@ import {
   FIELDS, GROUND, LAND, LAND_ORDER, PLACE_KINDS, ROAD, ROOFS, UNPAVED, WALLS, WATER, buildingHeight, pretty, type MapStyle,
 } from './styles';
 
+const UP = new THREE.Vector3(0, 1, 0);
+
 export type BuildInput = { P: LocalProjection; data: OsmData; elev: Elevation | null; img: Imagery | null; laser: LaserTrees | null; surface?: Surface | null; R: number; exag: number; style: MapStyle };
 export type BuildStats = { buildings: number; roofsMeasured: number; trees: number; treeSource?: 'laser' | 'estimated'; elevMin: number | null; elevMax: number | null };
 type Named = { name: string; kind: string };
@@ -184,6 +186,11 @@ export class MapEngine {
     addEventListener('keyup', this.onKeyUp);
     addEventListener('blur', this.onBlur);
     r.domElement.addEventListener('pointerleave', this.hideTip);
+    // touch: twisting two fingers rotates the map (MapControls does one-finger pan, pinch and two-finger drag)
+    r.domElement.addEventListener('pointerdown', this.onTouch);
+    r.domElement.addEventListener('pointermove', this.onTouch);
+    r.domElement.addEventListener('pointerup', this.onTouchEnd);
+    r.domElement.addEventListener('pointercancel', this.onTouchEnd);
     this.post = new Post(r, this.scene, this.camera, dom.container.clientWidth, dom.container.clientHeight);
     this.applyLight();
     r.setAnimationLoop(this.tick);
@@ -951,7 +958,43 @@ export class MapEngine {
     if (!d || e.button !== 0 || Math.hypot(e.clientX - d[0], e.clientY - d[1]) > 6) return;
     const v = this.vehicleAt(e);
     if (v) this.startFollow(v);
-    else this.stopFollow();
+    else {
+      this.stopFollow();
+      // no hover on touch screens: a tap shows what is there, for a few seconds
+      if (e.pointerType === 'touch') {
+        this.showTip(e, false);
+        clearTimeout(this.tipTimer);
+        this.tipTimer = setTimeout(this.hideTip, 3500);
+      }
+    }
+  };
+
+  // ---------- touch twist ----------
+
+  private fingers = new Map<number, [number, number]>();
+  private twist: number | null = null;
+  private fingerAngle() {
+    const [[ax, ay], [bx, by]] = [...this.fingers.values()];
+    return Math.atan2(by - ay, bx - ax);
+  }
+  private onTouch = (e: PointerEvent) => {
+    if (e.pointerType !== 'touch' || (e.type === 'pointermove' && !this.fingers.has(e.pointerId))) return;
+    this.fingers.set(e.pointerId, [e.clientX, e.clientY]);
+    if (this.fingers.size !== 2) return void (this.twist = null);
+    const a = this.fingerAngle();
+    if (this.twist !== null && e.type === 'pointermove') {
+      let d = a - this.twist;
+      d = Math.atan2(Math.sin(d), Math.cos(d)); // shortest way round
+      // turn the camera about the view centre so the ground turns with the fingers
+      const t = this.controls.target, off = this.camera.position.clone().sub(t).applyAxisAngle(UP, d);
+      this.camera.position.copy(t).add(off);
+      this.camera.lookAt(t);
+    }
+    this.twist = a;
+  };
+  private onTouchEnd = (e: PointerEvent) => {
+    if (!this.fingers.delete(e.pointerId)) return;
+    this.twist = this.fingers.size === 2 ? this.fingerAngle() : null;
   };
 
   // ---------- grab-the-ground drag ----------
@@ -1172,12 +1215,19 @@ export class MapEngine {
   }
 
   private hideTip = () => this.dom.tip.classList.remove('on');
+  private tipTimer: ReturnType<typeof setTimeout> | undefined;
   private onPointerMove = (e: PointerEvent) => {
     if (e.buttons) return this.hideTip();
+    if (e.pointerType === 'touch') return;
+    clearTimeout(this.tipTimer);
+    this.showTip(e, true);
+  };
+  /** The name of what is under the pointer (a vehicle only when `vehicles`), next to it. */
+  private showTip(e: PointerEvent, vehicles: boolean) {
     cancelAnimationFrame(this.tipRaf);
     this.tipRaf = requestAnimationFrame(() => {
-      const v = this.follow ? null : this.vehicleAt(e);
-      this.renderer.domElement.style.cursor = v ? 'pointer' : '';
+      const v = this.follow || !vehicles ? null : this.vehicleAt(e);
+      if (vehicles) this.renderer.domElement.style.cursor = v ? 'pointer' : '';
       const veh = v && { name: v.kind === 'car' ? v.name : v.train.name, kind: 'Click to follow' };
       const p = veh ? null : this.groundAt(e), f = veh || (p && this.lookup(p)), tip = this.dom.tip;
       if (!f) return this.hideTip();
@@ -1187,5 +1237,5 @@ export class MapEngine {
       tip.style.transform = `translate(${Math.min(e.clientX + 14, innerWidth - tip.offsetWidth - 8)}px,${e.clientY + 16}px)`;
       tip.classList.add('on');
     });
-  };
+  }
 }
