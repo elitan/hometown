@@ -58,7 +58,7 @@ Flip the **Data** switch in the app to compare:
 
 ## Get started
 
-Hometown is one small Rust binary (with the web app embedded) plus Postgres. The quickest way to run it is Docker:
+Hometown is one small Rust binary (with the web app embedded) with its data in one SQLite file. The quickest way to run it is Docker:
 
 ```bash
 docker compose up --build
@@ -68,10 +68,10 @@ Open http://localhost:3000. That's it: everything works with open data out of th
 
 ### Develop
 
-Requirements: Rust, Bun, [just](https://github.com/casey/just) and Docker (for Postgres).
+Requirements: Rust, Bun and [just](https://github.com/casey/just).
 
 ```bash
-just dev      # Postgres + api on :3000 + Vite on :5173, in the background
+just dev      # api on :3000 + Vite on :5173, in the background
 just check    # migrate, regenerate types, compile, typecheck, reload the api
 just verify   # + format, clippy, tests and the frontend build
 ```
@@ -90,7 +90,7 @@ Then open http://localhost:5173. Built on [northstack](https://github.com/elitan
    ```
 
 The login is only used by the server and never reaches the browser. Each area is processed once
-(a few seconds to half a minute the first time) and then served from Postgres.
+(a few seconds to half a minute the first time) and then served from the database (`data/dev.db` in development).
 
 ### Controls
 
@@ -124,7 +124,7 @@ place name ─► Nominatim ─► OpenStreetMap ─► buildings, roads, water,
 | Laser processing (server, Rust) | `server/src/features/lm/laser.rs` |
 | 1 m terrain (server, Rust) | `server/src/features/lm/dtm.rs` |
 
-The server is Rust ([northstack](https://github.com/elitan/northstack): axum, sqlx, Postgres) and reads
+The server is Rust ([northstack](https://github.com/elitan/northstack): axum, sqlx, SQLite) and reads
 Lantmäteriet's Cloud Optimized GeoTIFFs and COPC point clouds directly, downloading only the parts under
 the area. The browser side is React and three.js, built with Vite.
 

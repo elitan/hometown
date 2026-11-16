@@ -12,7 +12,7 @@ that need a login, and the heavy processing of their data, cached per area in `a
 - Look at changes in the browser: `just dev`, then http://localhost:5173 (`window.hometown` is the
   engine in development).
 
-It is built on [northstack](https://github.com/elitan/northstack): Rust (axum + sqlx/Postgres) on
+It is built on [northstack](https://github.com/elitan/northstack): Rust (axum + sqlx/SQLite) on
 the server, React + TypeScript in the browser with Next.js-style folder routing (`web/app/`), typed
 RPC in between, shipped as one binary. The framework's full guide is the northstack README, from
 "The guide" onwards. This file repeats the parts you must never miss.
@@ -20,7 +20,7 @@ RPC in between, shipped as one binary. The framework's full guide is the northst
 ## The loop
 
 ```sh
-just dev       # once per session: Postgres, api, Vite, in the background
+just dev       # once per session: api and Vite in the background (the database is data/dev.db)
 just check     # after every change: regenerate, compile, typecheck, reload the api
 just verify    # before you're done: check + fmt + clippy + tests + build
 ```
@@ -33,7 +33,7 @@ just verify    # before you're done: check + fmt + clippy + tests + build
 Types flow one way, and every step is generated:
 
 ```
-migration.sql -> Postgres -> server/src/db/schema.rs -> Rust -> web/northstack/ -> React
+migration.sql -> SQLite -> server/src/db/schema.rs -> Rust -> web/northstack/ -> React
 ```
 
 ## Never
@@ -53,7 +53,7 @@ migration.sql -> Postgres -> server/src/db/schema.rs -> Rust -> web/northstack/ 
 crates/northstack/      framework (rarely changed; add a test for every behavior change)
 server/
   migrations/           SQL migrations (timestamped, append-only)
-  src/db/schema.rs      GENERATED from Postgres
+  src/db/schema.rs      GENERATED from the database (also server/sqlx.toml)
   src/lib.rs            build(): registers every feature
   src/state.rs          AppState (db pool, HTTP client, Lantmäteriet login, per-area locks)
   src/features/lm/      the one backend feature: types.rs, db.rs, procedures.rs, routes.rs, ...
@@ -75,9 +75,12 @@ web/
 - **Other HTTP routes** (binary responses): an axum `Router<AppState>` in the feature, added with
   `.routes(...)` in `server/src/lib.rs`.
 - **CPU-heavy work** goes through `northstack::cpu::spawn(move || ...).await?`.
-- **Database:** `COMMENT ON` becomes docs in Rust and TS; `@private` in a column comment keeps it
-  out of JSON and TypeScript (`area_cache.data` uses it). Optional filters:
-  `($1::text IS NULL OR col = $1)`.
+- **Database:** SQLite, one file. SQL comments inside `CREATE TABLE` (on the table line, above or
+  after a column) become docs in Rust and TS; `@private` in a column comment keeps it out of JSON
+  and TypeScript (`area_cache.data` uses it). Column types: INTEGER, REAL, TEXT, BOOLEAN, UUID,
+  TIMESTAMP, DATE, JSON, BLOB. Computed columns need a type: `count(*) AS "n!: i64"`. Optional
+  filters: `($1 IS NULL OR col = $1)`. Transactions: `northstack::db::begin(&pool)`, never
+  `pool.begin()`.
 - **Tests:** unit tests next to pure logic; integration tests in `server/tests/<feature>.rs`.
 
 ## Frontend

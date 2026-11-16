@@ -1,13 +1,13 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use sqlx::PgPool;
+use sqlx::SqlitePool;
 
 /// Shared application state, available to every procedure (`ctx.state`) and
 /// job handler. Keep it cheap to clone.
 #[derive(Clone)]
 pub struct AppState {
-    pub db: PgPool,
+    pub db: SqlitePool,
     /// HTTP client for Lantmäteriet (connection pooling, rustls).
     pub http: reqwest::Client,
     /// `Basic ...` header from LM_USER / LM_PASS, if configured.
@@ -18,7 +18,7 @@ pub struct AppState {
 }
 
 impl AppState {
-    pub fn new(db: PgPool) -> Self {
+    pub fn new(db: SqlitePool) -> Self {
         let lm_auth = match (std::env::var("LM_USER"), std::env::var("LM_PASS")) {
             (Ok(u), Ok(p)) if !u.is_empty() && !p.is_empty() => {
                 Some(Arc::from(format!("Basic {}", base64(&format!("{u}:{p}")))))

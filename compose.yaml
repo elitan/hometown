@@ -1,38 +1,17 @@
-# `docker compose up --build` runs the whole app: Postgres + the single binary on http://localhost:3000.
-# Lantmäteriet login (optional) is read from LM_USER / LM_PASS in .env.
-#
-# Local development only needs the database: `just dev` starts the `db` service when DATABASE_URL
-# in .env is not reachable. Data persists in the `pgdata` volume; `just db-reset` starts over,
-# `docker compose down -v` removes it entirely.
+# `docker compose up --build` runs the whole app on http://localhost:3000: one binary, with its
+# SQLite database in the `data` volume. Lantmäteriet login (optional) is read from LM_USER / LM_PASS in .env.
 services:
-  db:
-    image: postgres:16
-    environment:
-      POSTGRES_USER: postgres
-      POSTGRES_HOST_AUTH_METHOD: trust
-    ports:
-      - "${DB_PORT:-5432}:5432"
-    volumes:
-      - pgdata:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD", "pg_isready", "-U", "postgres"]
-      interval: 1s
-      timeout: 3s
-      retries: 30
-
   app:
     build: .
-    depends_on:
-      db:
-        condition: service_healthy
     environment:
-      DATABASE_URL: postgres://postgres@db:5432/postgres
       LM_USER: ${LM_USER:-}
       LM_PASS: ${LM_PASS:-}
       RUST_LOG: info
     ports:
       - "${APP_PORT:-3000}:3000"
+    volumes:
+      - data:/data
     restart: unless-stopped
 
 volumes:
-  pgdata:
+  data:

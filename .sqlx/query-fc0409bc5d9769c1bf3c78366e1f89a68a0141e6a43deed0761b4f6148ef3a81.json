@@ -1,0 +1,21 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT info -> ('$.' || $2) AS \"v: serde_json::Value\" FROM area_cache WHERE key = $1",
+  "describe": {
+    "columns": [
+      {
+        "name": "v: serde_json::Value",
+        "ordinal": 0,
+        "type_info": "Null",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "fc0409bc5d9769c1bf3c78366e1f89a68a0141e6a43deed0761b4f6148ef3a81"
+}
