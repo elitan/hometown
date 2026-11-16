@@ -1,6 +1,7 @@
 // Data sources: geocoding, OSM features, elevation (Lantmäteriet 1 m or global 30 m), aerial imagery.
 import type { LatLon, OsmData, OsmElement } from './geo';
 import { call } from 'northstack';
+import { decodePng } from './png';
 
 export type BBox = { s: number; w: number; n: number; e: number };
 /** Elevation sampler in meters above sea level. */
@@ -86,34 +87,45 @@ function tileMath(z: number) {
 }
 
 /** Stitch the tiles covering a bbox into one canvas. */
-async function stitchTiles(b: BBox, z: number, url: (z: number, x: number, y: number) => string, raw: boolean) {
+async function stitchTiles(b: BBox, z: number, url: (z: number, x: number, y: number) => string) {
   const { tx, ty } = tileMath(z);
   const x0 = Math.floor(tx(b.w)), x1 = Math.floor(tx(b.e)), y0 = Math.floor(ty(b.n)), y1 = Math.floor(ty(b.s));
   const cv = document.createElement('canvas');
   cv.width = (x1 - x0 + 1) * 256; cv.height = (y1 - y0 + 1) * 256;
-  const ctx = cv.getContext('2d', { willReadFrequently: raw })!;
+  const ctx = cv.getContext('2d')!;
   const jobs: Promise<void>[] = [];
   for (let x = x0; x <= x1; x++) for (let y = y0; y <= y1; y++) jobs.push((async () => {
     const r = await fetch(url(z, x, y));
     if (!r.ok) throw new Error('Tile ' + r.status);
-    const opts: ImageBitmapOptions = raw ? { colorSpaceConversion: 'none', premultiplyAlpha: 'none' } : {};
-    ctx.drawImage(await createImageBitmap(await r.blob(), opts), (x - x0) * 256, (y - y0) * 256);
+    ctx.drawImage(await createImageBitmap(await r.blob()), (x - x0) * 256, (y - y0) * 256);
   })());
   const res = await Promise.allSettled(jobs);
   if (res.every(r => r.status === 'rejected')) throw new Error('No tiles available');
-  if (raw && res.some(r => r.status === 'rejected')) throw new Error('Some elevation tiles failed');
   return { cv, ctx, px: (lat: number, lon: number): [number, number] => [(tx(lon) - x0) * 256, (ty(lat) - y0) * 256] };
 }
 
 // ---------- elevation ----------
 
 /** Global Terrarium tiles (AWS open data, ~30 m source resolution in Sweden). */
+// Decoded from the PNG bytes, not through a canvas: canvas reads can carry anti-fingerprinting noise (see png.ts).
 export async function fetchTerrarium(b: BBox): Promise<Elevation> {
-  const { cv, ctx, px } = await stitchTiles(b, 14, (z, x, y) => `https://s3.amazonaws.com/elevation-tiles-prod/terrarium/${z}/${x}/${y}.png`, true);
-  const W = cv.width, H = cv.height;
-  const d = ctx.getImageData(0, 0, W, H).data, h = new Float32Array(W * H);
-  for (let i = 0; i < h.length; i++) h[i] = d[i * 4] * 256 + d[i * 4 + 1] + d[i * 4 + 2] / 256 - 32768;
+  const z = 14, { tx, ty } = tileMath(z);
+  const x0 = Math.floor(tx(b.w)), x1 = Math.floor(tx(b.e)), y0 = Math.floor(ty(b.n)), y1 = Math.floor(ty(b.s));
+  const W = (x1 - x0 + 1) * 256, H = (y1 - y0 + 1) * 256, h = new Float32Array(W * H);
+  const jobs: Promise<void>[] = [];
+  for (let x = x0; x <= x1; x++) for (let y = y0; y <= y1; y++) jobs.push((async () => {
+    const r = await fetch(`https://s3.amazonaws.com/elevation-tiles-prod/terrarium/${z}/${x}/${y}.png`);
+    if (!r.ok) throw new Error('Elevation tile ' + r.status);
+    const img = await decodePng(await r.arrayBuffer()), c = img.channels;
+    if (img.width !== 256 || img.height !== 256) throw new Error('Unexpected elevation tile size');
+    for (let j = 0; j < 256; j++) for (let i = 0; i < 256; i++) {
+      const s = (j * 256 + i) * c, d = img.data;
+      h[((y - y0) * 256 + j) * W + (x - x0) * 256 + i] = d[s] * 256 + d[s + 1] + d[s + 2] / 256 - 32768;
+    }
+  })());
+  await Promise.all(jobs);
   const grid = { data: h, W, H };
+  const px = (lat: number, lon: number): [number, number] => [(tx(lon) - x0) * 256, (ty(lat) - y0) * 256];
   return {
     source: 'terrarium', resolution: 30,
     at: (lat, lon) => { const [fx, fy] = px(lat, lon); return bilinear(grid, fx - 0.5, fy - 0.5); },
@@ -198,6 +210,6 @@ export async function fetchSurface(b: BBox): Promise<Surface> {
 /** Esri World Imagery aerial photos. */
 export async function fetchImagery(b: BBox, R: number): Promise<Imagery> {
   const z = R <= 600 ? 18 : R <= 1000 ? 17 : 16;
-  const { cv, px } = await stitchTiles(b, z, (z, x, y) => `https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/${z}/${y}/${x}`, false);
+  const { cv, px } = await stitchTiles(b, z, (z, x, y) => `https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/${z}/${y}/${x}`);
   return { cv, px };
 }

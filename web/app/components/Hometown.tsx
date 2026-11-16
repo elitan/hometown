@@ -48,14 +48,12 @@ export default function Hometown() {
   const [traffic, setTraffic] = useState(true);
   const [dataMode, setDataMode] = useState<'hd' | 'open'>('hd');
   const [follow, setFollow] = useState<{ name: string; kmh: number } | null>(null);
-  // season and clock: from the link (?season=winter&time=14.5) or "now" at the place; chosen = the user picked them
+  // season and clock: from the link (?season=winter&time=14.5), else a summer day at 13:00; chosen = in the link
   const [time, setTimeState] = useState<{ season: Season; hour: number; chosen: boolean }>(() => {
     const q = new URLSearchParams(location.search), s = q.get('season') as Season | null, h = parseFloat(q.get('time') ?? '');
-    return s && SEASONS.includes(s) ? { season: s, hour: Number.isFinite(h) ? h % 24 : 14, chosen: true } : { season: 'summer', hour: 14, chosen: false };
+    return s && SEASONS.includes(s) ? { season: s, hour: Number.isFinite(h) ? h % 24 : 13, chosen: true } : { season: 'summer', hour: 13, chosen: false };
   });
   const [playing, setPlaying] = useState(false);
-  const timeRef = useRef(time);
-  timeRef.current = time;
 
   const setStep = (k: StepKey, s: StepState) => setSteps(prev => ({ ...prev, [k]: s }));
 
@@ -99,7 +97,6 @@ export default function Hometown() {
       const [lat, lon, name] = await geocode(q);
       setStep('geo', 'done');
       const P = new LocalProjection(lat, lon), b = P.bbox(R);
-      if (!timeRef.current.chosen) setTimeState({ ...now(lat, lon), chosen: false });
       stage = 'osm';
       setSteps(s => ({ ...s, osm: 'active', dem: 'active', img: 'active' }));
       const t0 = performance.now();
@@ -187,7 +184,7 @@ export default function Hometown() {
     setPlaying(false);
     const P = loadedRef.current?.P;
     const [lat, lon] = P ? P.unproj(0, 0) : [56, 14];
-    setTimeState({ ...now(lat, lon), chosen: false });
+    setTimeState({ ...now(lat, lon), chosen: true });
   };
 
   const toggleTraffic = () => { const on = !traffic; setTraffic(on); engineRef.current?.setTraffic(on); };
