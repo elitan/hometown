@@ -25,14 +25,20 @@ COPY crates crates
 COPY server server
 COPY .sqlx .sqlx
 COPY --from=web /src/web/dist web/dist
-RUN cargo build --release -p server && strip target/release/app
+# Downloaded crates and compiled dependencies are kept between builds on the same Docker host
+# (BuildKit cache mounts), so a deploy only recompiles what changed. The binary is copied out
+# of the cached target directory, which isn't part of the image.
+RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
+    --mount=type=cache,target=/usr/local/cargo/git,sharing=locked \
+    --mount=type=cache,target=/src/target,sharing=locked \
+    cargo build --release -p server && strip target/release/app && cp target/release/app /app
 # An empty /data owned by the runtime user, so it works without a volume too.
 RUN mkdir -p /data
 
 # --- runtime ----------------------------------------------------------------
 # Distroless: no shell, no package manager, runs as non-root (uid 65532).
 FROM gcr.io/distroless/cc-debian12:nonroot
-COPY --from=build /src/target/release/app /app
+COPY --from=build /app /app
 COPY --from=build --chown=65532:65532 /data /data
 # Processing a new area's laser data can take up to a minute the first time.
 ENV PORT=3000 LOG_FORMAT=json DATABASE_URL=sqlite:/data/app.db REQUEST_TIMEOUT_SECS=120
