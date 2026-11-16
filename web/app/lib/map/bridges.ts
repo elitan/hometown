@@ -4,7 +4,8 @@ import * as THREE from 'three';
 import type { XY } from './geo';
 
 type Height = (x: number, y: number) => number;
-export type Bridge = { pts: XY[]; width: number; rail: boolean };
+/** `under`: true when the deck carries a road over an underpass (no piers: the road below runs there). */
+export type Bridge = { pts: XY[]; width: number; rail: boolean; under?: boolean };
 
 /** Deck height at both ends: the higher of the end point and a few meters beyond it (the solid bank). */
 export function deckEnds(pts: XY[], H: Height): [number, number] {
@@ -85,7 +86,7 @@ export function makeDeckAt(pts: XY[], H: Height) {
 export const isBridge = (t: Record<string, string>) => !!t.bridge && t.bridge !== 'no';
 export const isTunnel = (t: Record<string, string>) => !!t.tunnel && t.tunnel !== 'no' && t.tunnel !== 'building_passage';
 
-export function bridgeGeometry({ pts, width, rail }: Bridge, H: Height): THREE.BufferGeometry[] {
+export function bridgeGeometry({ pts, width, rail, under }: Bridge, H: Height): THREE.BufferGeometry[] {
   if (pts.length < 2) return [];
   const cum = cumulative(pts), len = cum[cum.length - 1];
   const ends = deckEnds(pts, H);
@@ -98,7 +99,7 @@ export function bridgeGeometry({ pts, width, rail }: Bridge, H: Height): THREE.B
   // railings / parapets
   for (const side of [-1, 1]) out.push(colorize(sweep(pts, hAt, side * half - 0.12, side * half + 0.12, 1.0, -0.05), '#9aa0a5'));
   // supports for longer spans, where the ground is well below the deck
-  if (len > 22) {
+  if (len > 22 && !under) {
     const n = Math.floor(len / 18);
     for (let k = 1; k <= n; k++) {
       const s = (k / (n + 1)) * len;
@@ -154,7 +155,8 @@ export function findUnderpasses(ways: WayInfo[], H: Height) {
   const under = ways.filter(w => w.tunnel && w.pts.length > 1 && cumulative(w.pts)[w.pts.length - 1] < UNDERPASS_MAX);
   const underIds = new Set(under.map(w => w.id));
   const decks = new Map<number, XY[][]>();
-  if (!under.length) return { underIds, decks };
+  const crossings = new Map<WayInfo, { s: number; half: number; w: WayInfo; span: [number, number] }[]>();
+  if (!under.length) return { underIds, decks, openings: [] as Opening[] };
   for (const w of ways) {
     if (w.tunnel || w.bridge || w.layer < 0 || w.pts.length < 2) continue;
     const cum = cumulative(w.pts), len = cum[cum.length - 1];
@@ -177,6 +179,9 @@ export function findUnderpasses(ways: WayInfo[], H: Height) {
       for (let q = s0; q <= s1; q += 1) low = Math.min(low, hAt(q));
       if (Math.min(hAt(s0), hAt(s1)) - low < 1) continue;
       spans.push([s0, s1]);
+      // where along the road below it crosses, and how much of that road the deck covers
+      const su = cumulative(u.pts)[j - 1] + (cross(u.pts[j - 1], u.pts[j], w.pts[i - 1], w.pts[i])?.t ?? 0) * Math.hypot(u.pts[j][0] - u.pts[j - 1][0], u.pts[j][1] - u.pts[j - 1][1]);
+      (crossings.get(u) ?? crossings.set(u, []).get(u)!).push({ s: su, half: (w.width / 2 + 0.6) / Math.max(0.35, x.sin), w, span: [s0, s1] });
     }
     if (!spans.length) continue;
     spans.sort((a, b) => a[0] - b[0]);
@@ -187,7 +192,24 @@ export function findUnderpasses(ways: WayInfo[], H: Height) {
     }
     decks.set(w.id, merged.map(([s0, s1]) => subLine(w.pts, cum, s0, s1)));
   }
-  return { underIds, decks };
+  // deck surface height where each deck crosses each road below
+  const openings: Opening[] = [];
+  for (const [u, cs] of crossings) {
+    const list = cs.map(c => {
+      const p = pointAlong(u.pts, cumulative(u.pts), c.s);
+      // the merged deck span of that road which passes over this point
+      let merged: XY[] | null = null, best = Infinity;
+      for (const d of decks.get(c.w.id)!) for (let i = 1; i < d.length; i++) {
+        const [ax, ay] = d[i - 1], [bx, by] = d[i], dx = bx - ax, dy = by - ay;
+        const t = Math.max(0, Math.min(1, ((p[0] - ax) * dx + (p[1] - ay) * dy) / (dx * dx + dy * dy || 1)));
+        const dist = Math.hypot(p[0] - ax - t * dx, p[1] - ay - t * dy);
+        if (dist < best) { best = dist; merged = d; }
+      }
+      return { s: c.s, half: c.half, h: merged ? makeDeckAt(merged, H)(p[0], p[1]) : H(p[0], p[1]) };
+    }).sort((a, b) => a.s - b.s);
+    openings.push({ pts: u.pts, width: u.width, crossings: list });
+  }
+  return { underIds, decks, openings };
 }
 
 /** Height along a road with deck spans: the deck on a span, the ground elsewhere. */
@@ -206,5 +228,101 @@ export function makeSpansAt(spans: XY[][], width: number, H: Height): Height {
   return (x, y) => {
     for (const d of decks) if (near(d.pts, x, y) < width / 2 + 3) return d.at(x, y);
     return H(x, y);
+  };
+}
+
+/** A road passing under one or more decks: where they cross it (distance along it) and their surface height. */
+export type Opening = { pts: XY[]; width: number; crossings: { s: number; half: number; h: number }[] };
+const OPENING = 1.2; // meters of verge between the road below and the retaining walls
+
+/** Point and left normal at distance s along a polyline, extended straight past its ends. */
+function frameAt(pts: XY[], cum: number[], s: number) {
+  const len = cum[cum.length - 1];
+  let i = 1; while (i < cum.length - 1 && cum[i] < s) i++;
+  const a = pts[i - 1], b = pts[i], l = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1, dx = (b[0] - a[0]) / l, dy = (b[1] - a[1]) / l;
+  const base = s < 0 ? pts[0] : s > len ? pts[pts.length - 1] : null;
+  const p: XY = base ? [base[0] + dx * (s < 0 ? s : s - len), base[1] + dy * (s < 0 ? s : s - len)] : pointAlong(pts, cum, s);
+  return { p, nx: -dy, ny: dx };
+}
+
+/**
+ * The embankment around an underpass: the bare-earth terrain dips through the opening, so fill it back up to the
+ * road above, except over the road below, and hold the fill with concrete retaining walls either side of it.
+ * Returns the fill surface (draped with the ground material: uv = map position) and the walls.
+ */
+export function underpassEarthworks(openings: Opening[], H: Height, R: number) {
+  const fill: number[] = [], uv: number[] = [], walls: number[] = [];
+  for (const o of openings) {
+    const cum = cumulative(o.pts), cs = o.crossings;
+    const sA = cs[0].s - cs[0].half, sB = cs[cs.length - 1].s + cs[cs.length - 1].half;
+    // embankment top along the road below: the deck surfaces, interpolated between decks, dropping 1:1 off the ends
+    const level = (s: number) => {
+      if (s < sA) return cs[0].h - 0.15 - (sA - s);
+      if (s > sB) return cs[cs.length - 1].h - 0.15 - (s - sB);
+      if (s <= cs[0].s) return cs[0].h - 0.15;
+      for (let k = 1; k < cs.length; k++) if (s <= cs[k].s) {
+        const t = (s - cs[k - 1].s) / ((cs[k].s - cs[k - 1].s) || 1);
+        return cs[k - 1].h + (cs[k].h - cs[k - 1].h) * t - 0.15;
+      }
+      return cs[cs.length - 1].h - 0.15;
+    };
+    const s0 = sA - 12, s1 = sB + 12, d0 = o.width / 2 + OPENING;
+    const ns = Math.ceil(s1 - s0), nd = 34, step = 1.5;
+    for (const side of [-1, 1]) {
+      const vert = (si: number, di: number) => {
+        const s = s0 + si, d = (d0 + di * step) * side, f = frameAt(o.pts, cum, s);
+        const x = f.p[0] + f.nx * d, y = f.p[1] + f.ny * d, g = H(x, y), lv = level(s);
+        return [x, lv > g ? lv : g - 0.15, -y];
+      };
+      for (let si = 0; si < ns; si++) for (let di = 0; di < nd; di++) {
+        const a = vert(si, di), b = vert(si + 1, di), c = vert(si + 1, di + 1), d = vert(si, di + 1);
+        // wind every triangle to face up (the two sides of the road below mirror each other)
+        const tri = (p: number[], q: number[], r: number[]) => {
+          const ny = (q[2] - p[2]) * (r[0] - p[0]) - (q[0] - p[0]) * (r[2] - p[2]);
+          for (const v of ny >= 0 ? [p, q, r] : [p, r, q]) { fill.push(...v); uv.push((v[0] + R) / (2 * R), (-v[2] + R) / (2 * R)); }
+        };
+        tri(a, b, c); tri(a, c, d);
+      }
+      // retaining wall at the edge of the opening, wherever the fill stands above the road below
+      for (let si = 0; si < ns; si++) {
+        const top = (k: number) => { const f = frameAt(o.pts, cum, s0 + k); const x = f.p[0] + f.nx * d0 * side, y = f.p[1] + f.ny * d0 * side; return { x, y, t: level(s0 + k), g: H(x, y) }; };
+        const a = top(si), b = top(si + 1);
+        if (a.t < a.g + 0.2 && b.t < b.g + 0.2) continue;
+        const ta = Math.max(a.t, a.g) + 0.3, tb = Math.max(b.t, b.g) + 0.3; // a low parapet on top
+        walls.push(a.x, ta, -a.y, b.x, tb, -b.y, b.x, b.g - 0.4, -b.y, a.x, ta, -a.y, b.x, b.g - 0.4, -b.y, a.x, a.g - 0.4, -a.y);
+      }
+    }
+  }
+  const fillGeo = new THREE.BufferGeometry();
+  fillGeo.setAttribute('position', new THREE.Float32BufferAttribute(fill, 3));
+  fillGeo.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+  fillGeo.computeVertexNormals();
+  const wallGeo = new THREE.BufferGeometry();
+  wallGeo.setAttribute('position', new THREE.Float32BufferAttribute(walls, 3));
+  return { fill: fillGeo, walls: colorize(wallGeo, '#8f8b83') };
+}
+
+/**
+ * Ground under an underpass opening, for the terrain mesh only: the mesh is a few metres coarse, so its
+ * triangles would slope into the opening from the (filled) banks. Inside the opening and one mesh cell either
+ * side of it, use the height of the road below instead. Returns null away from openings.
+ */
+export function openingGround(openings: Opening[], H: Height, cell: number) {
+  const prepared = openings.map(o => {
+    const cum = cumulative(o.pts), cs = o.crossings;
+    return { o, cum, sA: cs[0].s - cs[0].half - 2, sB: cs[cs.length - 1].s + cs[cs.length - 1].half + 2, reach: o.width / 2 + OPENING + cell * 1.2 };
+  });
+  return (x: number, y: number): number | null => {
+    for (const { o, cum, sA, sB, reach } of prepared) {
+      let best = Infinity, bestS = 0;
+      for (let i = 1; i < o.pts.length; i++) {
+        const [ax, ay] = o.pts[i - 1], [bx, by] = o.pts[i], dx = bx - ax, dy = by - ay;
+        const t = Math.max(0, Math.min(1, ((x - ax) * dx + (y - ay) * dy) / (dx * dx + dy * dy || 1)));
+        const d = Math.hypot(x - ax - t * dx, y - ay - t * dy);
+        if (d < best) { best = d; bestS = cum[i - 1] + t * (cum[i] - cum[i - 1]); }
+      }
+      if (best < reach && bestS >= sA && bestS <= sB) { const p = pointAlong(o.pts, cum, bestS); return H(p[0], p[1]); }
+    }
+    return null;
   };
 }

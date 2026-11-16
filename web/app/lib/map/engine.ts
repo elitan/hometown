@@ -15,7 +15,7 @@ import { Forest, type TreeSpec } from './forest';
 import { Props } from './props';
 import { HouseDetails, PLINTH, roofTexture, roofUVs, wallTexture } from './houses';
 import { cleanPhoto } from './photo';
-import { bridgeGeometry, findUnderpasses, isBridge, isTunnel, makeDeckAt, makeSpansAt, type Bridge } from './bridges';
+import { bridgeGeometry, findUnderpasses, isBridge, isTunnel, makeDeckAt, makeSpansAt, openingGround, underpassEarthworks, type Bridge } from './bridges';
 import {
   FIELDS, GROUND, LAND, LAND_ORDER, PLACE_KINDS, ROAD, ROOFS, UNPAVED, WALLS, WATER, buildingHeight, pretty, type MapStyle,
 } from './styles';
@@ -378,7 +378,7 @@ export class MapEngine {
     this.lightDirty = true;
 
     // short tunnels under roads are underpasses: drawn on the surface, with a deck carrying the road above
-    const { underIds, decks: overDecks } = findUnderpasses(data.elements.filter(el => el.type === 'way' && el.geometry && el.geometry.length > 1 && el.tags?.highway && el.tags.area !== 'yes').map(el => {
+    const { underIds, decks: overDecks, openings } = findUnderpasses(data.elements.filter(el => el.type === 'way' && el.geometry && el.geometry.length > 1 && el.tags?.highway && el.tags.area !== 'yes').map(el => {
       const t = el.tags!;
       return { id: el.id, pts: toXY(P, el.geometry!), width: ROAD[t.highway]?.[0] ?? 3, tunnel: isTunnel(t), bridge: isBridge(t), layer: parseFloat(t.layer) || 0 };
     }), H);
@@ -387,11 +387,24 @@ export class MapEngine {
     const g = new THREE.PlaneGeometry(2 * R, 2 * R, seg, seg).rotateX(-Math.PI / 2);
     const pos = g.attributes.position;
     let minY = Infinity;
-    for (let i = 0; i < pos.count; i++) { const y = H(pos.getX(i), -pos.getZ(i)); pos.setY(i, y); minY = Math.min(minY, y); }
+    const inOpening = openings.length ? openingGround(openings, H, (2 * R) / seg) : null;
+    for (let i = 0; i < pos.count; i++) {
+      const x = pos.getX(i), yy = -pos.getZ(i), y = inOpening?.(x, yy) ?? H(x, yy);
+      pos.setY(i, y); minY = Math.min(minY, y);
+    }
     g.computeVertexNormals();
     const groundMat = groundMaterial(tex, R);
     seasonalGround(groundMat, roadMask);
     const ground = new THREE.Mesh(g, groundMat);
+    if (openings.length) {
+      // embankments filled back up around underpasses, with retaining walls
+      const ew = underpassEarthworks(openings, H, R);
+      const fillMesh = new THREE.Mesh(ew.fill, groundMat);
+      fillMesh.receiveShadow = true;
+      const wallMesh = new THREE.Mesh(ew.walls, new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.9, side: THREE.DoubleSide }));
+      wallMesh.castShadow = wallMesh.receiveShadow = true;
+      world.add(fillMesh, wallMesh);
+    }
     ground.receiveShadow = true;
     world.add(ground);
     world.add(this.skirt(H, R, seg, minY - 30));
@@ -484,7 +497,7 @@ export class MapEngine {
       if ((t.highway || t.railway === 'rail') && el.type === 'way' && el.geometry && el.geometry.length > 1 && isBridge(t)) {
         bridges.push({ pts: toXY(P, el.geometry), width: t.railway ? 4 : (ROAD[t.highway]?.[0] ?? 3), rail: !!t.railway });
       }
-      for (const pts of overDecks.get(el.id) ?? []) bridges.push({ pts, width: ROAD[t.highway]?.[0] ?? 3, rail: false });
+      for (const pts of overDecks.get(el.id) ?? []) bridges.push({ pts, width: ROAD[t.highway]?.[0] ?? 3, rail: false, under: true });
       if (/^(rail|light_rail|narrow_gauge)$/.test(t.railway ?? '') && el.type === 'way' && el.geometry && el.geometry.length > 1 && t.service !== 'yard') {
         const pts = toXY(P, el.geometry);
         railWays.push({ pts, bridgeAt: isBridge(t) ? makeDeckAt(pts, H) : undefined, tunnel: isTunnel(t) });
