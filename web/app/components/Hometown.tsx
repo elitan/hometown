@@ -13,7 +13,7 @@ import { SEASONS, now, type Season } from '../lib/map/sun';
 
 type Loaded = { P: LocalProjection; data: OsmData; elev: Elevation | null; img: Imagery | null; laser: LaserTrees | null; surface: Surface | null; R: number; name: string };
 
-const RADII = [{ v: 500, label: '1 km' }, { v: 1000, label: '2 km' }, { v: 1500, label: '3 km' }];
+const RADII = [{ v: 1000, label: '2 km' }, { v: 1500, label: '3 km' }, { v: 2000, label: '4 km' }];
 const HILLS = [{ v: 1, label: '×1' }, { v: 2, label: '×2' }, { v: 4, label: '×4' }];
 const DATA = [{ v: 'hd', label: 'Lantmäteriet HD' }, { v: 'open', label: 'Open data only' }] as const;
 const STYLES: { v: MapStyle; label: string }[] = [{ v: 'illustrated', label: 'Illustrated' }, { v: 'hybrid', label: 'Hybrid' }, { v: 'satellite', label: 'Satellite' }];
@@ -34,7 +34,7 @@ export default function Hometown() {
   const hintTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
 
   const [place, setPlace] = useState('Mala, Hässleholm');
-  const [radius, setRadius] = useState(1000);
+  const [radius, setRadius] = useState(1500);
   const [hills, setHills] = useState(2);
   const [style, setStyle] = useState<MapStyle>('hybrid');
   const [busy, setBusy] = useState(false);
@@ -169,7 +169,7 @@ export default function Hometown() {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- sync the input with the shared link once on mount
     if (fromHash) setPlace(fromHash);
     if (!lantmaterietEnabled()) setDataMode('open');
-    load(q, 1000, { hills: 2, style: 'hybrid' });
+    load(q, 1500, { hills: 2, style: 'hybrid' });
     return () => { eng.dispose(); engineRef.current = null; };
   }, [load, hideHint]);
 

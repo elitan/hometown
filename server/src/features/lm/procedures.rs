@@ -39,7 +39,8 @@ pub fn check_area(
     if !input.bbox.iter().all(|v| v.is_finite()) || e <= w || n <= s {
         return Err((BadRequest, "bbox [w,s,e,n] required".into()));
     }
-    if e - w > 0.08 || n - s > 0.05 {
+    // 4 × 4 km up to the far north of Sweden (69° N)
+    if e - w > 0.11 || n - s > 0.05 {
         return Err((BadRequest, "Area too large".into()));
     }
     if let Some(res) = input.res

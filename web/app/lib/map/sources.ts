@@ -133,7 +133,7 @@ const SWEREF99TM = '+proj=utm +zone=33 +ellps=GRS80 +towgs84=0,0,0,0,0,0,0 +unit
 export async function fetchLantmaterietDTM(b: BBox, R: number): Promise<Elevation> {
   const status = await lmStatus();
   if (!status?.lantmateriet) throw new Error('Lantmäteriet login not configured');
-  const res = R <= 1000 ? 1 : 1.5; // meters per sample
+  const res = R <= 1000 ? 1 : R <= 1500 ? 1.5 : 2; // meters per sample
   const [{ default: proj4 }, r] = await Promise.all([
     import('proj4'),
     fetch('/api/lm/dtm', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ bbox: [b.w, b.s, b.e, b.n], res }) }),
