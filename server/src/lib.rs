@@ -25,5 +25,7 @@ pub fn build() -> App<AppState> {
         .frontend::<Assets>()
         .rpc(features::lm::rpc())
         .routes(features::lm::routes())
+        .jobs(features::lm::jobs())
+        .cron(features::lm::cron())
     // northstack:features (new features are registered above this line)
 }

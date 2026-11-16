@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM area_cache\n         WHERE COALESCE(used_at, created_at)\n             < strftime('%Y-%m-%dT%H:%M:%f+00:00', 'now', '-' || $1 || ' hours')",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "c41c57f29c61e8e2d8671e3765cc436228f4abea128def58e654c5208192542a"
+}

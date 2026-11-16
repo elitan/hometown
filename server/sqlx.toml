@@ -4,3 +4,4 @@
 [macros.table-overrides.'area_cache']
 'info' = "serde_json::Value"
 'created_at' = "chrono::DateTime<chrono::Utc>"
+'used_at' = "chrono::DateTime<chrono::Utc>"
