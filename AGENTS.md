@@ -14,8 +14,9 @@ that need a login, and the heavy processing of their data, cached per area in `a
 
 It is built on [northstack](https://github.com/elitan/northstack): Rust (axum + sqlx/SQLite) on
 the server, React + TypeScript in the browser with Next.js-style folder routing (`web/app/`), typed
-RPC in between, shipped as one binary. The framework's full guide is the northstack README, from
-"The guide" onwards. This file repeats the parts you must never miss.
+RPC in between, shipped as one binary. The framework is the `northstack` crate, pinned to an exact version in `Cargo.toml`
+(`just upgrade` moves it). Its full guide is `docs/northstack.md` (replaced on upgrade, don't edit
+it). This file repeats the parts you must never miss.
 
 ## The loop
 
@@ -50,7 +51,8 @@ migration.sql -> SQLite -> server/src/db/schema.rs -> Rust -> web/northstack/ ->
 ## Layout
 
 ```
-crates/northstack/      framework (rarely changed; add a test for every behavior change)
+cli/                    runs the northstack CLI at the pinned version (`just` uses it). No code here.
+docs/northstack.md      the framework guide, replaced by `just upgrade`
 server/
   migrations/           SQL migrations (timestamped, append-only)
   src/db/schema.rs      GENERATED from the database (also server/sqlx.toml)

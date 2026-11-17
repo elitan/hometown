@@ -5,6 +5,8 @@ use northstack::axum::http::{HeaderValue, StatusCode, header};
 use northstack::axum::response::{IntoResponse, Response};
 use northstack::axum::routing::post;
 use northstack::axum::{Json, Router};
+use tower_http::CompressionLevel;
+use tower_http::compression::CompressionLayer;
 
 use super::procedures::{check_area, surface, terrain};
 use super::types::{AreaInput, Grid};
@@ -14,6 +16,9 @@ pub fn router() -> Router<AppState> {
     Router::new()
         .route("/api/lm/dtm", post(dtm))
         .route("/api/lm/surface", post(surface_grid))
+        // Fastest gzip: the framework's default level costs seconds on these multi-megabyte grids
+        // for little gain. Its own compression skips responses that are already encoded.
+        .layer(CompressionLayer::new().quality(CompressionLevel::Fastest))
 }
 
 /// 1 m terrain as Float32 metres, row 0 = north.

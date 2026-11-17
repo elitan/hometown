@@ -21,7 +21,7 @@ ENV SQLX_OFFLINE=true
 COPY Cargo.toml Cargo.lock ./
 # Build settings (SQLite compile flags for concurrency).
 COPY .cargo .cargo
-COPY crates crates
+COPY cli cli
 COPY server server
 COPY .sqlx .sqlx
 COPY --from=web /src/web/dist web/dist

@@ -1,6 +1,10 @@
 [workspace]
 resolver = "2"
-members = ["crates/northstack", "server"]
+members = ["server", "cli"]
+
+[workspace.dependencies]
+# The framework. Apps pin an exact version here; `just upgrade` changes it.
+northstack = "=0.1.0"
 
 [profile.release]
 lto = "thin"
